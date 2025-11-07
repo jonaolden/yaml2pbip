@@ -1,0 +1,30 @@
+table {{ table.name }}
+{% if table.measures %}
+{% for measure in table.measures %}
+
+  measure {{ measure.name }} = {{ measure.expression }}
+{% if measure.formatString %}    formatString: {{ measure.formatString }}
+{% endif %}
+{% if measure.displayFolder %}    displayFolder: {{ measure.displayFolder }}
+{% endif %}
+{% if measure.isHidden is not none %}    isHidden: {{ measure.isHidden|lower }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if table.kind == "table" %}
+{% for column in table.columns %}
+
+  column {{ column.name }}
+    dataType: {{ column.dataType }}
+    {% if column.formatString %}formatString: {{ column.formatString }}{% endif %}
+    {% if column.isHidden is not none %}isHidden: {{ column.isHidden|lower }}{% endif %}
+{% endfor %}
+{% for partition in table.partitions %}
+
+  partition {{ partition.name }} = m
+    mode: {{ partition.mode }}
+    source = ```
+{{ partition_mcode }}
+```
+{% endfor %}
+{% endif %}

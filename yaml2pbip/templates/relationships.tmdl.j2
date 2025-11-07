@@ -1,0 +1,6 @@
+{% for rel in relationships %}
+relationship {{ rel.from_ }} -> {{ rel.to }}
+  crossFilterDirection: {{ rel.crossFilter }}
+  isActive: {{ rel.isActive|lower }}
+  cardinality: {{ rel.cardinality }}
+{% endfor %}

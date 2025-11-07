@@ -1,0 +1,21 @@
+{% for key, src in sources.items() %}
+expression 'Source.{{ key }}' =
+  kind: m
+  expression: ```
+    let
+      Source = Snowflake.Databases("{{ src.server }}", [
+        {% if src.warehouse %}Warehouse = "{{ src.warehouse }}",{% endif %}
+        {% if src.role %}Role = "{{ src.role }}",{% endif %}
+        {% if src.options and src.options.queryTag %}QueryTag = "{{ src.options.queryTag }}"{% endif %}
+      ]),
+      DB = if optionalDatabase <> null then
+             Source{[Name = optionalDatabase, Kind = "Database"]}[Data]
+           else
+             Source
+    in
+      DB
+  ```
+  {% if not loop.last %}
+
+{% endif %}
+{% endfor %}

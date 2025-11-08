@@ -23,7 +23,8 @@ def compile_project(
     sources_yaml: Path,
     outdir: Path,
     stub_report: bool = True,
-    hide_extras_introspect: bool = False
+    hide_extras_introspect: bool = False,
+    transforms_dirs: list[str] | None = None
 ) -> None:
     """
     Compile YAML specifications into a Power BI Project (.pbip) with TMDL files.
@@ -103,14 +104,22 @@ def compile_project(
         emit_model_tmdl(def_dir, spec.model)
         logger.debug(f"Created {def_dir / 'model.tmdl'}")
         
-        # Emit expressions.tmdl with M source functions
-        emit_expressions_tmdl(def_dir, sources)
+        # Resolve and load transforms into context
+        from .discovery import resolve_transform_dirs
+        from .transforms import load_transforms
+        project_root = model_yaml.parent
+        dirs = resolve_transform_dirs(project_root, transforms_dirs or [])
+        logger.info(f"Loading transforms from {dirs}")
+        transforms = load_transforms(dirs, logger)
+
+        # Emit expressions.tmdl with M source functions and transforms
+        emit_expressions_tmdl(def_dir, sources, transforms)
         logger.debug(f"Created {def_dir / 'expressions.tmdl'}")
         
         # Emit individual table TMDL files
         logger.info(f"Emitting {len(spec.model.tables)} table(s)...")
         for table in spec.model.tables:
-            emit_table_tmdl(tbl_dir, table, sources)
+            emit_table_tmdl(tbl_dir, table, sources, transforms)
             logger.debug(f"Created {tbl_dir / table.name}.tmdl")
         
         # Emit relationships.tmdl if relationships exist

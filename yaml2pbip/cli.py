@@ -49,6 +49,12 @@ def main():
         help="Enable introspection for hide_extras column policy (MVP: not yet implemented)"
     )
     compile_parser.add_argument(
+        "--transforms-dir",
+        action="append",
+        default=[],
+        help="Additional transforms directories (repeatable)."
+    )
+    compile_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging"
@@ -93,7 +99,8 @@ def main():
                 sources_yaml=args.sources_yaml,
                 outdir=args.out,
                 stub_report=not args.no_stub_report,
-                hide_extras_introspect=args.introspect_hide_extras
+                hide_extras_introspect=args.introspect_hide_extras,
+                transforms_dirs=args.transforms_dir
             )
             # Find the generated .pbip file to display in success message
             pbip_files = list(args.out.glob("*.pbip"))

@@ -43,3 +43,18 @@ expression {{ key }} =
 
 {% endif %}
 {% endfor %}
+
+{% if transforms %}
+{% for name, body in transforms.items() -%}
+expression {{ name }} =
+{% for line in body.strip().splitlines() -%}
+      {{ line }}
+{% endfor %}
+    lineageTag: {{ generate_lineage_tag() }}
+
+    annotation PBI_IncludeFutureArtifacts = False
+{% if not loop.last %}
+
+{% endif %}
+{% endfor -%}
+{% endif %}

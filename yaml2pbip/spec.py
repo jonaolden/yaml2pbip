@@ -64,6 +64,8 @@ class Partition(BaseModel):
     entityName: Optional[str] = None
     schemaName: Optional[str] = None
     expressionSource: Optional[str] = None
+    # Custom transforms (list of transform names)
+    custom_steps: List[str] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def validate_partition_type(self):

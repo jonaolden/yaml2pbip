@@ -77,7 +77,6 @@ model:
         - name: IsWeekend
           dataType: boolean
           description: "True if Saturday or Sunday"
-      
       partitions:
         - name: Full
           mode: import
@@ -87,6 +86,8 @@ model:
             schema: DIM
             table: DATE
           description: "Full date dimension import"
+          custom_steps: [ proper_casting ]
+
 
     # ========================================
     # Dimension Table: Product dimension
@@ -120,7 +121,6 @@ model:
           dataType: decimal
           formatString: "$#,0.00"
           description: "Standard unit price"
-      
       partitions:
         - name: Full
           mode: import
@@ -130,7 +130,8 @@ model:
             schema: DIM
             table: PRODUCT
           description: "Full product dimension import"
-      
+          custom_steps: [ proper_casting ]
+
       measures:
         - name: Product Count
           expression: "COUNTROWS ( DimProduct )"

@@ -127,8 +127,34 @@ def test_emission():
         emit_model_tmdl(def_dir, model)
         emit_expressions_tmdl(def_dir, sources)
         
+        # For tests we don't have external transforms; pass empty dict
         for table in model.tables:
-            emit_table_tmdl(tbl_dir, table, sources)
+            emit_table_tmdl(tbl_dir, table, sources, transforms={})
+
+        # Additional unit test: ensure partition transform injection works
+        print("\nTesting partition transform injection...")
+        from yaml2pbip.emit import generate_partition_mcode
+        # Create a navigation partition that references a transform named 'mytransform'
+        t_partition = Partition(
+            name="WithTransform",
+            mode="import",
+            use="sf_main",
+            navigation=Navigation(database="SALES", schema="DIM", table="DATE"),
+            custom_steps=["mytransform"]
+        )
+        t_table = Table(
+            name="DimDate",
+            column_policy="select_only",
+            columns=[Column(name="Date", dataType="date")],
+            partitions=[t_partition],
+            source={"use": "sf_main"}
+        )
+        transforms = {"mytransform": "(t as table) as table => t"}
+        mcode = generate_partition_mcode(t_partition, t_table, sources, transforms=transforms)
+        assert "__steps" in mcode, "__steps not present in partition M code"
+        assert "List.Accumulate" in mcode, "List.Accumulate not present in partition M code"
+        assert "mytransform" in mcode, "transform name not referenced in M code"
+        print("✓ Partition transform injection appears in generated M code")
         
         emit_relationships_tmdl(def_dir, model)
         emit_report_by_path(rpt_dir, f"../{model.name}.SemanticModel")

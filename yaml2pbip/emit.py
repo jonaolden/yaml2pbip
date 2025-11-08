@@ -4,8 +4,11 @@ from typing import Dict
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import json
 import uuid
+import logging
 
 from .spec import ModelBody, Table, Partition, SourcesSpec, Source
+
+logger = logging.getLogger(__name__)
 
 
 def _get_jinja_env() -> Environment:
@@ -24,6 +27,7 @@ def _get_jinja_env() -> Environment:
     # Add custom function for generating lineage tags
     env.globals['generate_lineage_tag'] = _generate_lineage_tag
     return env
+
 
 def _generate_lineage_tag() -> str:
     """Generate a UUID for Power BI lineage tracking.
@@ -62,35 +66,26 @@ def emit_model_tmdl(def_dir: Path, model: ModelBody) -> None:
     (def_dir / "model.tmdl").write_text(content)
 
 
-def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec) -> None:
-    """Render and write expressions.tmdl with M source functions.
-    
-    Args:
-        def_dir: Path to definition directory
-        sources: SourcesSpec containing all source definitions
+def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict | None = None) -> None:
+    """Render and write expressions.tmdl with M source functions only.
+
+    Transforms are intentionally NOT emitted as named expressions anymore —
+    transforms are inlined directly into partition M code so they do not
+    appear as separate expression definitions.
     """
     def_dir.mkdir(parents=True, exist_ok=True)
     env = _get_jinja_env()
     template = env.get_template("expressions.tmdl.j2")
-    content = template.render(sources=sources.sources)
+    # Do not render transforms as separate expressions; pass empty transforms
+    content = template.render(sources=sources.sources, transforms={})
     (def_dir / "expressions.tmdl").write_text(content)
 
 
-def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec) -> str:
+def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> str:
     """Generate Power Query M code for a partition with column policy logic.
 
-    This function robustly handles the four permutations of where the database
-    comes from:
-      - source.database present, partition.navigation.database present (same)
-      - source.database present, partition.navigation.database present (different)
-      - source.database present, partition.navigation.database absent
-      - source.database absent, partition.navigation.database present
-
-    If the source defines a `database` but the partition requests a different
-    database, the function will inline a `Snowflake.Databases(...)` call so we
-    can navigate to the requested database. If the source has no database and
-    the partition does not specify one, we raise an error because the target
-    database would be ambiguous.
+    This version inlines transform function bodies directly into the partition
+    M code instead of emitting them as separate expressions.
     """
     source_key = partition.use or (table.source and table.source.get("use"))
     if not source_key:
@@ -103,7 +98,6 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
     declared_cols = [(col.name, col.dataType) for col in table.columns]
 
     def _build_snowflake_call(src: Source) -> str:
-        """Build an inline Snowflake.Databases(...) M expression for a Source."""
         parts = []
         if src.warehouse:
             parts.append(f'Warehouse = "{src.warehouse}"')
@@ -119,11 +113,7 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
 
     lines = ["let"]
 
-    # Helper to append selection logic given a source table variable name
     def _append_type_steps(source_table_var: str):
-        # For now, do not emit type transformation steps. If column_policy is
-        # select_only we still select the declared columns, otherwise return the
-        # original table/result as-is.
         if table.column_policy == "select_only" and declared_cols:
             col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
             lines.append(f"  Selected = Table.SelectColumns({source_table_var}, {{{col_names}}}, MissingField.UseNull),")
@@ -131,33 +121,64 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         else:
             lines.append(f"  Final = {source_table_var}")
 
+    def _extract_func_body(func_text: str) -> str:
+        # crude extraction: take everything after the first '=>'
+        idx = func_text.find('=>')
+        if idx == -1:
+            raise ValueError("Transform function missing '=>' token")
+        return func_text[idx + 2 :].strip()
+
+    def _inline_transforms(prev_var: str) -> str:
+        # Inline each transform sequentially, returning the final variable name
+        prev = prev_var
+        for i, name in enumerate(partition.custom_steps):
+            body = transforms[name]
+            func_body = _extract_func_body(body)
+            cur = f"__t_{i}"
+            # ensure previous line ends with a comma so we can append assignments
+            if not lines[-1].strip().endswith(','):
+                lines[-1] = lines[-1] + ','
+            # emit the inline anonymous function application
+            lines.append(f"  {cur} = ((t) =>")
+            for ln in func_body.splitlines():
+                lines.append("    " + ln)
+            # close the lambda and call it with the previous var
+            # add trailing comma except for the last transform; final returned var will be used
+            comma = ',' if i < len(partition.custom_steps) - 1 else ''
+            lines.append(f"  )({prev}){comma}")
+            prev = cur
+        return prev
+
+    # Validate custom transforms referenced by partition
+    if partition.custom_steps:
+        missing = [name for name in partition.custom_steps if name not in (transforms or {})]
+        if missing:
+            raise ValueError(
+                f"Partition '{partition.name}' in table '{table.name}' references unknown transforms: {missing}"
+            )
+        if partition.mode == "directquery":
+            logger.warning(
+                "Partition '%s' in table '%s' is DirectQuery and references transforms which may not fold: %s",
+                partition.name, table.name, partition.custom_steps
+            )
+
     # Generate for navigation-based partitions
     if partition.navigation:
         nav = partition.navigation
 
-        # If source has no database and partition also does not specify a database,
-        # we cannot resolve which database to navigate to.
         if not source.database and not (nav and nav.database):
             raise ValueError(
                 f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
             )
 
-        # Case: partition requests a specific database
         if nav and nav.database:
-            # If source.database is present and matches requested database, reuse expression
             if source.database and nav.database == source.database:
                 lines.append(f'  DB = {source_key},')
             else:
-                # Either source.database is None (expression returns Source collection),
-                # or source.database is present but different. In both cases inline the
-                # Snowflake.Databases call so we can index into the collection.
                 sf_call = _build_snowflake_call(source)
                 lines.append(f'  SourceColl = {sf_call},')
                 lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
-
         else:
-            # No partition-level database requested. Use the source expression only
-            # if it already returns a Database (i.e., source.database is present).
             if source.database:
                 lines.append(f'  DB = {source_key},')
             else:
@@ -165,35 +186,32 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
                     f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
                 )
 
-        # Navigate to schema and table
         lines.append(f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],')
         lines.append(f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],')
 
-        # Append column policy/type steps operating on TBL
         _append_type_steps("TBL")
 
+        final_return = "Final"
+        if partition.custom_steps:
+            final_return = _inline_transforms("Final")
+
         lines.append("in")
-        lines.append("  Final")
+        lines.append(f"  {final_return}")
 
     elif partition.nativeQuery:
         sql = partition.nativeQuery.strip().replace('"', '\\"')
 
-        # Determine DB target for Value.NativeQuery
-        # If partition.navigation with database provided, prefer that
         nav = partition.navigation
         if nav and nav.database:
-            # If source.database matches, we can reuse expression
             if source.database and nav.database == source.database:
                 lines.append(f'  DB = {source_key},')
                 db_var = "DB"
             else:
-                # Inline Snowflake.Databases -> pick the requested DB
                 sf_call = _build_snowflake_call(source)
                 lines.append(f'  SourceColl = {sf_call},')
                 lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
                 db_var = "DB"
         else:
-            # No partition.navigation.database provided: use the source expression if it returns a Database
             if source.database:
                 lines.append(f'  DB = {source_key},')
                 db_var = "DB"
@@ -202,27 +220,21 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
                     f"Cannot run nativeQuery for partition '{partition.name}': source '{source_key}' has no database and partition has no navigation.database"
                 )
 
-        # Call native query against resolved DB
         lines.append(f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),')
 
         _append_type_steps("Result")
 
+        final_return = "Final"
+        if partition.custom_steps:
+            final_return = _inline_transforms("Final")
+
         lines.append("in")
-        lines.append("  Types")
+        lines.append(f"  {final_return}")
 
     else:
         raise ValueError(f"Partition {partition.name} has neither navigation nor nativeQuery")
 
     return "\n".join(lines)
-
-
-def _generate_lineage_tag() -> str:
-    """Generate a UUID for Power BI lineage tracking.
-    
-    Returns:
-        UUID string in format like '6bfd7976-09ca-7046-4a83-0c3085609e3c'
-    """
-    return str(uuid.uuid4())
 
 
 def _map_datatype_to_m(datatype: str) -> str:
@@ -249,13 +261,14 @@ def _map_datatype_to_m(datatype: str) -> str:
     return mapping.get(datatype, "Any.Type")
 
 
-def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec) -> None:
+def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> None:
     """Render and write individual table TMDL with M code generation.
     
     Args:
         tbl_dir: Path to tables directory
         table: Table definition
         sources: SourcesSpec for partition M code generation
+        transforms: optional dict of named transforms to validate and pass through
     """
     tbl_dir.mkdir(parents=True, exist_ok=True)
     env = _get_jinja_env()
@@ -266,7 +279,7 @@ def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec) -> None:
     if table.partitions:
         first_partition = table.partitions[0]
         if first_partition.mode != "directLake":
-            partition_mcode = generate_partition_mcode(first_partition, table, sources)
+            partition_mcode = generate_partition_mcode(first_partition, table, sources, transforms)
     
     content = template.render(
         table=table,

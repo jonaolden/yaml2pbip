@@ -4,7 +4,7 @@ from typing import List, Literal, Optional, Dict
 from pydantic import BaseModel, Field, field_validator, model_validator
 import re
 
-DataType = Literal["int64", "decimal", "double", "bool", "string", "date", "datetime", "time", "currency", "variant"]
+DataType = Literal["int64", "decimal", "double", "boolean", "string", "date", "dateTime", "time", "currency", "variant"]
 
 
 class SourceOptions(BaseModel):
@@ -93,7 +93,7 @@ class Table(BaseModel):
 class Relationship(BaseModel):
     """Relationship definition between tables."""
     from_: str = Field(alias="from")  # "Fact[Col]"
-    to: str  # "Dim[Col]"
+    to: str = Field(alias="to")       # "Dim[Col]"
     cardinality: Literal["oneToOne", "oneToMany", "manyToOne"]
     crossFilter: Literal["single", "both"] = "single"
     isActive: Optional[bool] = True
@@ -101,7 +101,7 @@ class Relationship(BaseModel):
     @field_validator("from_", "to")
     @classmethod
     def endpoint_syntax(cls, v):
-        """Validate relationship endpoint syntax."""
+        """Validate relationship endpoint syntax (Table[Column])."""
         if not re.match(r"^[A-Za-z_][\w ]*\[[A-Za-z_][\w ]*\]$", v):
             raise ValueError("endpoint must be Table[Column]")
         return v

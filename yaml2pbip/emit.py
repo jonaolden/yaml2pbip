@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import json
+import uuid
 
 from .spec import ModelBody, Table, Partition, SourcesSpec, Source
 
@@ -20,7 +21,18 @@ def _get_jinja_env() -> Environment:
         trim_blocks=True,
         lstrip_blocks=True
     )
+    # Add custom function for generating lineage tags
+    env.globals['generate_lineage_tag'] = _generate_lineage_tag
     return env
+
+def _generate_lineage_tag() -> str:
+    """Generate a UUID for Power BI lineage tracking.
+    
+    Returns:
+        UUID string in format like '6bfd7976-09ca-7046-4a83-0c3085609e3c'
+    """
+    return str(uuid.uuid4())
+
 
 
 def emit_pbism(sm_dir: Path) -> None:
@@ -31,8 +43,7 @@ def emit_pbism(sm_dir: Path) -> None:
     """
     sm_dir.mkdir(parents=True, exist_ok=True)
     pbism_content = {
-        "version": "1.0",
-        "type": "pbi-semantic-model"
+        "version": "1.0"
     }
     (sm_dir / "definition.pbism").write_text(json.dumps(pbism_content, indent=2))
 
@@ -151,6 +162,15 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
     return "\n".join(lines)
 
 
+def _generate_lineage_tag() -> str:
+    """Generate a UUID for Power BI lineage tracking.
+    
+    Returns:
+        UUID string in format like '6bfd7976-09ca-7046-4a83-0c3085609e3c'
+    """
+    return str(uuid.uuid4())
+
+
 def _map_datatype_to_m(datatype: str) -> str:
     """Map Pydantic DataType to M type.
     
@@ -164,10 +184,10 @@ def _map_datatype_to_m(datatype: str) -> str:
         "int64": "Int64.Type",
         "decimal": "Number.Type",
         "double": "Number.Type",
-        "bool": "Logical.Type",
+        "boolean": "Logical.Type",
         "string": "Text.Type",
         "date": "Date.Type",
-        "datetime": "DateTime.Type",
+        "dateTime": "DateTime.Type",
         "time": "Time.Type",
         "currency": "Currency.Type",
         "variant": "Any.Type"

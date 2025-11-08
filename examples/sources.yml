@@ -1,0 +1,29 @@
+# yaml2pbip Sources Configuration Example
+# This file defines data source connections for your semantic model
+
+version: 1
+
+sources:
+  # Main Snowflake data warehouse connection
+  sf_main:
+    kind: snowflake
+    server: xy12345.eu-central-1.snowflakecomputing.com
+    warehouse: COMPUTE_WH
+    database: SALES
+    role: ANALYST
+    options:
+      # Snowflake connector implementation version
+      implementation: "2.0"
+      # Custom query tag for tracking queries
+      queryTag: yaml2pbip
+  
+  # Example of a secondary source (if needed)
+  sf_archive:
+    kind: snowflake
+    server: xy12345.eu-central-1.snowflakecomputing.com
+    warehouse: ARCHIVE_WH
+    database: HISTORICAL_SALES
+    role: ANALYST
+    options:
+      implementation: "2.0"
+      queryTag: yaml2pbip_archive

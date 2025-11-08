@@ -1,6 +1,9 @@
 {% for rel in relationships %}
-relationship {{ rel.from_ }} -> {{ rel.to }}
-  crossFilterDirection: {{ rel.crossFilter }}
-  isActive: {{ rel.isActive|lower }}
-  cardinality: {{ rel.cardinality }}
+relationship {{ generate_lineage_tag() }}
+  crossFilteringBehavior: {{ 'bothDirections' if rel.crossFilter == 'both' else 'oneDirection' }}
+  isActive: {{ 'true' if rel.isActive else 'false' }}
+  fromCardinality: {{ 'many' if rel.cardinality == 'manyToOne' else 'one' if rel.cardinality == 'oneToMany' else 'one' }}
+  toCardinality: {{ 'one' if rel.cardinality == 'manyToOne' else 'many' if rel.cardinality == 'oneToMany' else 'one' }}
+  fromColumn: {{ rel.from_ | replace('[', '.') | replace(']', '') }}
+  toColumn: {{ rel.to | replace('[', '.') | replace(']', '') }}
 {% endfor %}

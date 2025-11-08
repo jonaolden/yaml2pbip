@@ -129,12 +129,12 @@ def compile_project(
             
             # Create .pbip project file
             pbip_content = {
+                "$schema": "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json",
                 "version": "1.0",
                 "artifacts": [
                     {
                         "report": {
-                            "path": f"{spec.model.name}.Report",
-                            "displayName": spec.model.name
+                            "path": f"{spec.model.name}.Report"
                         }
                     }
                 ]

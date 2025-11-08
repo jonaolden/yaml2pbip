@@ -4,9 +4,17 @@ expression 'Source.{{ key }}' =
   expression: ```
     let
       Source = Snowflake.Databases("{{ src.server }}", [
-        {% if src.warehouse %}Warehouse = "{{ src.warehouse }}",{% endif %}
-        {% if src.role %}Role = "{{ src.role }}",{% endif %}
-        {% if src.options and src.options.queryTag %}QueryTag = "{{ src.options.queryTag }}"{% endif %}
+{% if src.warehouse %}
+        Warehouse = "{{ src.warehouse }}"{% if src.role or (src.options and src.options.queryTag) %},{% endif %}
+
+{% endif -%}
+{% if src.role %}
+        Role = "{{ src.role }}"{% if src.options and src.options.queryTag %},{% endif %}
+
+{% endif -%}
+{% if src.options and src.options.queryTag %}
+        QueryTag = "{{ src.options.queryTag }}"
+{% endif %}
       ]),
       DB = if optionalDatabase <> null then
              Source{[Name = optionalDatabase, Kind = "Database"]}[Data]

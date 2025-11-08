@@ -1,0 +1,4 @@
+venv/
+.roo/
+models/
+test-output

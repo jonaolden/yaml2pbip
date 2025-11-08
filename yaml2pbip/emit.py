@@ -1,14 +1,23 @@
 """TMDL emission functions for yaml2pbip."""
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import json
 import uuid
 import logging
 
-from .spec import ModelBody, Table, Partition, SourcesSpec, Source
+from .spec import ModelBody, Table, Partition, SourcesSpec, Source, Navigation
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_lineage_tag() -> str:
+    """Generate a UUID for Power BI lineage tracking.
+    
+    Returns:
+        UUID string in format like '6bfd7976-09ca-7046-4a83-0c3085609e3c'
+    """
+    return str(uuid.uuid4())
 
 
 def _get_jinja_env() -> Environment:
@@ -27,15 +36,6 @@ def _get_jinja_env() -> Environment:
     # Add custom function for generating lineage tags
     env.globals['generate_lineage_tag'] = _generate_lineage_tag
     return env
-
-
-def _generate_lineage_tag() -> str:
-    """Generate a UUID for Power BI lineage tracking.
-    
-    Returns:
-        UUID string in format like '6bfd7976-09ca-7046-4a83-0c3085609e3c'
-    """
-    return str(uuid.uuid4())
 
 
 
@@ -87,15 +87,25 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
     This version inlines transform function bodies directly into the partition
     M code instead of emitting them as separate expressions.
     """
-    source_key = partition.use or (table.source and table.source.get("use"))
-    if not source_key:
+    # Determine source key explicitly from partition.use or table.source.use
+    source_key = partition.use
+    if not source_key and table.source and isinstance(table.source, dict):
+        source_key = table.source.get("use")
+
+    if not isinstance(source_key, str) or not source_key:
         raise ValueError(f"Partition {partition.name} in table {table.name} has no source specified")
 
-    source = sources.sources.get(source_key)
+    # Localize source_key as string for static checkers
+    s_key: str = source_key
+
+    source = sources.sources.get(s_key)
     if not source:
-        raise ValueError(f"Source {source_key} not found in sources")
+        raise ValueError(f"Source {s_key} not found in sources")
 
     declared_cols = [(col.name, col.dataType) for col in table.columns]
+    # Normalize transforms to an empty dict when None to satisfy static checkers
+    transforms: dict = transforms or {}
+    assert isinstance(transforms, dict)
 
     def _build_snowflake_call(src: Source) -> str:
         parts = []
@@ -113,14 +123,6 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
 
     lines = ["let"]
 
-    def _append_type_steps(source_table_var: str):
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns({source_table_var}, {{{col_names}}}, MissingField.UseNull),")
-            lines.append(f"  Final = Selected()")
-        else:
-            lines.append(f"  Final = {source_table_var}")
-
     def _extract_func_body(func_text: str) -> str:
         # crude extraction: take everything after the first '=>'
         idx = func_text.find('=>')
@@ -129,25 +131,22 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         return func_text[idx + 2 :].strip()
 
     def _inline_transforms(prev_var: str) -> str:
-        # Inline each transform sequentially, returning the final variable name
-        prev = prev_var
-        for i, name in enumerate(partition.custom_steps):
-            body = transforms[name]
-            func_body = _extract_func_body(body)
-            cur = f"__t_{i}"
-            # ensure previous line ends with a comma so we can append assignments
+        # Emit named transform functions and a steps list, then use List.Accumulate
+        # to apply them sequentially. Returns the name of the final resulting variable.
+        # prev_var is the base table variable (e.g., Final)
+        for name in partition.custom_steps:
+            body = transforms[name].strip()
+            # Ensure previous line ends with a comma
             if not lines[-1].strip().endswith(','):
                 lines[-1] = lines[-1] + ','
-            # emit the inline anonymous function application
-            lines.append(f"  {cur} = ((t) =>")
-            for ln in func_body.splitlines():
-                lines.append("    " + ln)
-            # close the lambda and call it with the previous var
-            # add trailing comma except for the last transform; final returned var will be used
-            comma = ',' if i < len(partition.custom_steps) - 1 else ''
-            lines.append(f"  )({prev}){comma}")
-            prev = cur
-        return prev
+            lines.append(f'  {name} = {body},')
+        # Emit __steps list
+        steps_list = ", ".join(partition.custom_steps)
+        lines.append(f'  __steps = {{{steps_list}}},')
+        # Emit accumulated application, producing a new variable Final_transformed
+        final_var = "Final_transformed"
+        lines.append(f'  {final_var} = List.Accumulate(__steps, {prev_var}, (state, f) => f(state))')
+        return final_var
 
     # Validate custom transforms referenced by partition
     if partition.custom_steps:
@@ -162,34 +161,47 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
                 partition.name, table.name, partition.custom_steps
             )
 
+    def _resolve_db(source: Source, source_key: str, nav: Navigation | None, require_nav_db: bool = False) -> list:
+        """Return lines needed to ensure a DB variable exists for the partition.
+
+        If nav is provided and specifies a database different from the source's declared database,
+        this emits a Snowflake.Databases call and DB resolution; otherwise it binds DB to the
+        source symbol. Raises ValueError when neither source nor nav provide a database.
+        """
+        db_lines: list[str] = []
+        if nav and getattr(nav, "database", None):
+            if source.database and nav.database == source.database:
+                db_lines.append(f'  DB = {source_key},')
+            else:
+                sf_call = _build_snowflake_call(source)
+                db_lines.append(f'  SourceColl = {sf_call},')
+                db_lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
+        else:
+            if source.database:
+                db_lines.append(f'  DB = {source_key},')
+            elif require_nav_db:
+                raise ValueError(
+                    f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
+                )
+        return db_lines
+
     # Generate for navigation-based partitions
     if partition.navigation:
         nav = partition.navigation
 
-        if not source.database and not (nav and nav.database):
-            raise ValueError(
-                f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
-            )
-
-        if nav and nav.database:
-            if source.database and nav.database == source.database:
-                lines.append(f'  DB = {source_key},')
-            else:
-                sf_call = _build_snowflake_call(source)
-                lines.append(f'  SourceColl = {sf_call},')
-                lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
-        else:
-            if source.database:
-                lines.append(f'  DB = {source_key},')
-            else:
-                raise ValueError(
-                    f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
-                )
+        # Use helper to resolve DB lines (will raise if impossible)
+        lines.extend(_resolve_db(source, source_key, nav, require_nav_db=True))
 
         lines.append(f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],')
         lines.append(f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],')
 
-        _append_type_steps("TBL")
+        # Inline type-step logic here to reduce indirection
+        if table.column_policy == "select_only" and declared_cols:
+            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
+            lines.append(f"  Selected = Table.SelectColumns(TBL, {{{col_names}}}, MissingField.UseNull),")
+            lines.append(f"  Final = Selected")
+        else:
+            lines.append(f"  Final = TBL")
 
         final_return = "Final"
         if partition.custom_steps:
@@ -202,27 +214,24 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         sql = partition.nativeQuery.strip().replace('"', '\\"')
 
         nav = partition.navigation
-        if nav and nav.database:
-            if source.database and nav.database == source.database:
-                lines.append(f'  DB = {source_key},')
-                db_var = "DB"
-            else:
-                sf_call = _build_snowflake_call(source)
-                lines.append(f'  SourceColl = {sf_call},')
-                lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
-                db_var = "DB"
-        else:
-            if source.database:
-                lines.append(f'  DB = {source_key},')
-                db_var = "DB"
-            else:
-                raise ValueError(
-                    f"Cannot run nativeQuery for partition '{partition.name}': source '{source_key}' has no database and partition has no navigation.database"
-                )
+        # Resolve DB for nativeQuery; if nav.database provided or source has database it will work
+        lines.extend(_resolve_db(source, source_key, nav, require_nav_db=False))
+
+        # If no DB lines resolved, then neither nav nor source provided database - error
+        if not any(l.strip().startswith('DB =') for l in lines):
+            raise ValueError(
+                f"Cannot run nativeQuery for partition '{partition.name}': source '{source_key}' has no database and partition has no navigation.database"
+            )
 
         lines.append(f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),')
 
-        _append_type_steps("Result")
+        # Inline type-step logic here as well
+        if table.column_policy == "select_only" and declared_cols:
+            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
+            lines.append(f"  Selected = Table.SelectColumns(Result, {{{col_names}}}, MissingField.UseNull),")
+            lines.append(f"  Final = Selected")
+        else:
+            lines.append(f"  Final = Result")
 
         final_return = "Final"
         if partition.custom_steps:
@@ -235,6 +244,7 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         raise ValueError(f"Partition {partition.name} has neither navigation nor nativeQuery")
 
     return "\n".join(lines)
+
 
 
 def _map_datatype_to_m(datatype: str) -> str:

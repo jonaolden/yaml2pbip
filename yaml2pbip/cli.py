@@ -109,13 +109,8 @@ def main():
             else:
                 print(f"\n✓ Successfully compiled to {args.out}")
             sys.exit(0)
-        except FileNotFoundError as e:
-            logging.error(f"File not found: {e}")
-            if args.verbose:
-                logging.exception("Full traceback:")
-            sys.exit(1)
-        except ValueError as e:
-            logging.error(f"Validation error: {e}")
+        except (FileNotFoundError, ValueError) as e:
+            logging.error(f"Error: {e}")
             if args.verbose:
                 logging.exception("Full traceback:")
             sys.exit(1)

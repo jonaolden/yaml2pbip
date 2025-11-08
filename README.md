@@ -7,21 +7,21 @@ A compiler that converts YAML specifications to Power BI Project (.pbip) format 
 yaml2pbip simplifies Power BI semantic model development by allowing you to define your models in clean, version-control-friendly YAML files instead of managing complex TMDL syntax directly.
 
 **Key Benefits:**
-- 📝 Write models in simple, readable YAML
-- 🔄 Better version control and diffing
-- 🎯 Focus on structure, not syntax
-- 🚀 Faster iteration and development
-- ✅ Schema validation with Pydantic
+- Write models in simple, readable YAML
+- Better version control and diffing
+- Focus on structure, not syntax
+- Faster iteration and development
+- Schema validation with Pydantic
 
 ## Features
 
-- ✨ **Measure Tables**: Zero-column tables for organizing cross-table measures
-- 📊 **Column Policies**: Control column selection (`select_only`, `keep_all`, `hide_extras`)
-- 🔌 **Flexible Partitions**: Both navigation-based and native SQL support
-- 🔗 **Relationships**: Easy relationship definition with cardinality
-- 🎨 **Format Strings**: Apply formatting to columns and measures
-- 🏷️ **Type System**: Rich data type support (int64, decimal, string, date, datetime, boolean, etc.)
-- ☁️ **Snowflake Support**: First-class Snowflake connector support
+-  **Measure Tables**: Zero-column tables for organizing cross-table measures
+-  **Column Policies**: Control column selection (`select_only`, `keep_all`, `hide_extras`)
+-  **Flexible Partitions**: Both navigation-based and native SQL support
+-  **Relationships**: Easy relationship definition with cardinality
+-  **Format Strings**: Apply formatting to columns and measures
+-  **Type System**: Rich data type support (int64, decimal, string, date, datetime, boolean, etc.)
+-  **Snowflake Support**: First-class Snowflake connector support
 
 ## Installation
 

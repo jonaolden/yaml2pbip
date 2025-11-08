@@ -78,87 +78,141 @@ def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec) -> None:
 
 def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec) -> str:
     """Generate Power Query M code for a partition with column policy logic.
-    
-    Args:
-        partition: Partition definition
-        table: Table containing the partition
-        sources: SourcesSpec for source resolution
-        
-    Returns:
-        M code string for the partition
+
+    This function robustly handles the four permutations of where the database
+    comes from:
+      - source.database present, partition.navigation.database present (same)
+      - source.database present, partition.navigation.database present (different)
+      - source.database present, partition.navigation.database absent
+      - source.database absent, partition.navigation.database present
+
+    If the source defines a `database` but the partition requests a different
+    database, the function will inline a `Snowflake.Databases(...)` call so we
+    can navigate to the requested database. If the source has no database and
+    the partition does not specify one, we raise an error because the target
+    database would be ambiguous.
     """
     source_key = partition.use or (table.source and table.source.get("use"))
     if not source_key:
         raise ValueError(f"Partition {partition.name} in table {table.name} has no source specified")
-    
+
     source = sources.sources.get(source_key)
     if not source:
         raise ValueError(f"Source {source_key} not found in sources")
-    
-    # Build column list for type transformation
+
     declared_cols = [(col.name, col.dataType) for col in table.columns]
-    
-    # Generate M code based on partition type
+
+    def _build_snowflake_call(src: Source) -> str:
+        """Build an inline Snowflake.Databases(...) M expression for a Source."""
+        parts = []
+        if src.warehouse:
+            parts.append(f'Warehouse = "{src.warehouse}"')
+        if src.role:
+            parts.append(f'Role = "{src.role}"')
+        if src.options and src.options.queryTag:
+            parts.append(f'QueryTag = "{src.options.queryTag}"')
+        if parts:
+            inner = ", ".join(parts)
+            return f'Snowflake.Databases("{src.server}", [{inner}])'
+        else:
+            return f'Snowflake.Databases("{src.server}")'
+
+    lines = ["let"]
+
+    # Helper to append selection logic given a source table variable name
+    def _append_type_steps(source_table_var: str):
+        # For now, do not emit type transformation steps. If column_policy is
+        # select_only we still select the declared columns, otherwise return the
+        # original table/result as-is.
+        if table.column_policy == "select_only" and declared_cols:
+            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
+            lines.append(f"  Selected = Table.SelectColumns({source_table_var}, {{{col_names}}}, MissingField.UseNull),")
+            lines.append(f"  Final = Selected()")
+        else:
+            lines.append(f"  Final = {source_table_var}")
+
+    # Generate for navigation-based partitions
     if partition.navigation:
         nav = partition.navigation
-        database = nav.database or (source.database if source.database else "null")
-        
-        # Start with navigation M code
-        lines = [
-            "let",
-            f'  DB = Source.{source_key}("{database}"),',
-            f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],',
-            f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],'
-        ]
-        
-        # Apply column policy
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns(TBL, {{{col_names}}}, MissingField.UseNull),")
-            
-            # Add type transformations
-            type_specs = ", ".join(f'{{"{col[0]}", type {_map_datatype_to_m(col[1])}}}' for col in declared_cols)
-            lines.append(f"  Types = Table.TransformColumnTypes(Selected, {{{type_specs}}})")
-        elif declared_cols:
-            # keep_all or hide_extras (MVP treats hide_extras as keep_all)
-            type_specs = ", ".join(f'{{"{col[0]}", type {_map_datatype_to_m(col[1])}}}' for col in declared_cols)
-            lines.append(f"  Types = Table.TransformColumnTypes(TBL, {{{type_specs}}})")
+
+        # If source has no database and partition also does not specify a database,
+        # we cannot resolve which database to navigate to.
+        if not source.database and not (nav and nav.database):
+            raise ValueError(
+                f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
+            )
+
+        # Case: partition requests a specific database
+        if nav and nav.database:
+            # If source.database is present and matches requested database, reuse expression
+            if source.database and nav.database == source.database:
+                lines.append(f'  DB = {source_key},')
+            else:
+                # Either source.database is None (expression returns Source collection),
+                # or source.database is present but different. In both cases inline the
+                # Snowflake.Databases call so we can index into the collection.
+                sf_call = _build_snowflake_call(source)
+                lines.append(f'  SourceColl = {sf_call},')
+                lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
+
         else:
-            lines.append("  Types = TBL")
-        
+            # No partition-level database requested. Use the source expression only
+            # if it already returns a Database (i.e., source.database is present).
+            if source.database:
+                lines.append(f'  DB = {source_key},')
+            else:
+                raise ValueError(
+                    f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
+                )
+
+        # Navigate to schema and table
+        lines.append(f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],')
+        lines.append(f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],')
+
+        # Append column policy/type steps operating on TBL
+        _append_type_steps("TBL")
+
         lines.append("in")
-        lines.append("  Types")
-        
+        lines.append("  Final")
+
     elif partition.nativeQuery:
-        sql = partition.nativeQuery.strip()
-        
-        # Start with native query M code
-        lines = [
-            "let",
-            f'  DB = Source.{source_key}(null),',
-            f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),'
-        ]
-        
-        # Apply column policy
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns(Result, {{{col_names}}}, MissingField.UseNull),")
-            
-            # Add type transformations
-            type_specs = ", ".join(f'{{"{col[0]}", type {_map_datatype_to_m(col[1])}}}' for col in declared_cols)
-            lines.append(f"  Types = Table.TransformColumnTypes(Selected, {{{type_specs}}})")
-        elif declared_cols:
-            # keep_all or hide_extras
-            type_specs = ", ".join(f'{{"{col[0]}", type {_map_datatype_to_m(col[1])}}}' for col in declared_cols)
-            lines.append(f"  Types = Table.TransformColumnTypes(Result, {{{type_specs}}})")
+        sql = partition.nativeQuery.strip().replace('"', '\\"')
+
+        # Determine DB target for Value.NativeQuery
+        # If partition.navigation with database provided, prefer that
+        nav = partition.navigation
+        if nav and nav.database:
+            # If source.database matches, we can reuse expression
+            if source.database and nav.database == source.database:
+                lines.append(f'  DB = {source_key},')
+                db_var = "DB"
+            else:
+                # Inline Snowflake.Databases -> pick the requested DB
+                sf_call = _build_snowflake_call(source)
+                lines.append(f'  SourceColl = {sf_call},')
+                lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
+                db_var = "DB"
         else:
-            lines.append("  Types = Result")
-        
+            # No partition.navigation.database provided: use the source expression if it returns a Database
+            if source.database:
+                lines.append(f'  DB = {source_key},')
+                db_var = "DB"
+            else:
+                raise ValueError(
+                    f"Cannot run nativeQuery for partition '{partition.name}': source '{source_key}' has no database and partition has no navigation.database"
+                )
+
+        # Call native query against resolved DB
+        lines.append(f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),')
+
+        _append_type_steps("Result")
+
         lines.append("in")
         lines.append("  Types")
+
     else:
         raise ValueError(f"Partition {partition.name} has neither navigation nor nativeQuery")
-    
+
     return "\n".join(lines)
 
 
@@ -207,13 +261,12 @@ def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec) -> None:
     env = _get_jinja_env()
     template = env.get_template("table.tmdl.j2")
     
-    # Generate M code for each partition
-    partition_mcodes = {}
-    for partition in table.partitions:
-        partition_mcodes[partition.name] = generate_partition_mcode(partition, table, sources)
-    
-    # Render table with first partition's M code (if any)
-    partition_mcode = partition_mcodes.get(table.partitions[0].name, "") if table.partitions else ""
+    # Generate M code only for M partitions (not entity partitions)
+    partition_mcode = ""
+    if table.partitions:
+        first_partition = table.partitions[0]
+        if first_partition.mode != "directLake":
+            partition_mcode = generate_partition_mcode(first_partition, table, sources)
     
     content = template.render(
         table=table,

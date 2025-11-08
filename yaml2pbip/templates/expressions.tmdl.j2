@@ -1,29 +1,45 @@
 {% for key, src in sources.items() %}
-expression 'Source.{{ key }}' =
-  kind: m
-  expression: ```
-    let
-      Source = Snowflake.Databases("{{ src.server }}", [
+expression {{ key }} =
+{% if src.database %}
+		let
+		    Source = Snowflake.Databases("{{ src.server }}", [
 {% if src.warehouse %}
-        Warehouse = "{{ src.warehouse }}"{% if src.role or (src.options and src.options.queryTag) %},{% endif %}
+		      Warehouse = "{{ src.warehouse }}"{% if src.role or (src.options and src.options.queryTag) %},{% endif %}
 
 {% endif -%}
 {% if src.role %}
-        Role = "{{ src.role }}"{% if src.options and src.options.queryTag %},{% endif %}
+		      Role = "{{ src.role }}"{% if src.options and src.options.queryTag %},{% endif %}
 
 {% endif -%}
 {% if src.options and src.options.queryTag %}
-        QueryTag = "{{ src.options.queryTag }}"
+		      QueryTag = "{{ src.options.queryTag }}"
 {% endif %}
-      ]),
-      DB = if optionalDatabase <> null then
-             Source{[Name = optionalDatabase, Kind = "Database"]}[Data]
-           else
-             Source
-    in
-      DB
-  ```
-  {% if not loop.last %}
+		    ]),
+		    Database = Source{[Name = "{{ src.database }}", Kind = "Database"]}[Data]
+		in
+		    Database
+{% else %}
+		let
+		    Source = Snowflake.Databases("{{ src.server }}", [
+{% if src.warehouse %}
+		      Warehouse = "{{ src.warehouse }}"{% if src.role or (src.options and src.options.queryTag) %},{% endif %}
+
+{% endif -%}
+{% if src.role %}
+		      Role = "{{ src.role }}"{% if src.options and src.options.queryTag %},{% endif %}
+
+{% endif -%}
+{% if src.options and src.options.queryTag %}
+		      QueryTag = "{{ src.options.queryTag }}"
+{% endif %}
+		    ])
+		in
+		    Source
+{% endif %}
+	lineageTag: {{ generate_lineage_tag() }}
+
+	annotation PBI_IncludeFutureArtifacts = False
+{% if not loop.last %}
 
 {% endif %}
 {% endfor %}

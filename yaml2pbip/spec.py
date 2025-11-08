@@ -56,16 +56,30 @@ class Navigation(BaseModel):
 class Partition(BaseModel):
     """Partition definition for a table."""
     name: str
-    mode: Literal["import", "directquery"] = "import"
+    mode: Literal["import", "directquery", "directLake"] = "import"
     use: Optional[str] = None  # source key
     navigation: Optional[Navigation] = None
     nativeQuery: Optional[str] = None
+    # For entity partitions (directLake)
+    entityName: Optional[str] = None
+    schemaName: Optional[str] = None
+    expressionSource: Optional[str] = None
 
     @model_validator(mode='after')
-    def nav_or_sql(self):
-        """Validate that partition has either navigation or nativeQuery."""
-        if not self.navigation and not self.nativeQuery:
-            raise ValueError("partition requires navigation or nativeQuery")
+    def validate_partition_type(self):
+        """Validate that partition has correct fields based on mode."""
+        if self.mode == "directLake":
+            # Entity partition requires entityName, schemaName, and expressionSource
+            if not self.entityName or not self.schemaName or not self.expressionSource:
+                raise ValueError("directLake partition requires entityName, schemaName, and expressionSource")
+            if self.navigation or self.nativeQuery:
+                raise ValueError("directLake partition should not have navigation or nativeQuery")
+        else:
+            # M partition requires navigation or nativeQuery
+            if not self.navigation and not self.nativeQuery:
+                raise ValueError("import/directquery partition requires navigation or nativeQuery")
+            if self.entityName or self.schemaName or self.expressionSource:
+                raise ValueError("import/directquery partition should not have entityName, schemaName, or expressionSource")
         return self
 
 

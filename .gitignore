@@ -2,3 +2,8 @@ venv/
 .roo/
 models/
 test-output
+opencode.json
+test/
+__pycache__/
+*.pyc
+*.pyo

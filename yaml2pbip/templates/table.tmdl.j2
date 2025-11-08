@@ -33,10 +33,19 @@ table '{{ table.name }}'
 {% endfor %}
 {% for partition in table.partitions %}
 
+{% if partition.mode == "directLake" %}
+  partition {{ partition.name }} = entity
+    mode: {{ partition.mode }}
+    source
+      entityName: {{ partition.entityName }}
+      schemaName: {{ partition.schemaName }}
+      expressionSource: {{ partition.expressionSource }}
+{% else %}
   partition {{ partition.name }} = m
     mode: {{ partition.mode }}
     source = ```
 {{ partition_mcode }}
 ```
+{% endif %}
 {% endfor %}
 {% endif %}

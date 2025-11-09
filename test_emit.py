@@ -43,6 +43,12 @@ def test_emission():
         }
     )
     
+    # Create sample transforms
+    transforms = {
+        "proper_naming": "(t as table) as table => Table.RenameColumns(t, {{\"OLD_NAME\", \"NewName\"}})",
+        "cast_numbers": "(t as table) as table => Table.TransformColumnTypes(t, {{\"Amount\", Int64.Type}})"
+    }
+    
     # Create model
     model = ModelBody(
         name="TestModel",
@@ -72,7 +78,8 @@ def test_emission():
                         name="Full",
                         mode="import",
                         use="sf_main",
-                        navigation=Navigation(database="SALES", schema="DIM", table="DATE")
+                        navigation=Navigation(database="SALES", schema="DIM", table="DATE"),
+                        custom_steps=["proper_naming", "cast_numbers"]
                     )
                 ],
                 source={"use": "sf_main"}
@@ -125,22 +132,22 @@ def test_emission():
         print("Emitting TMDL files...")
         emit_pbism(sm_dir)
         emit_model_tmdl(def_dir, model)
-        emit_expressions_tmdl(def_dir, sources)
+        emit_expressions_tmdl(def_dir, sources, transforms)
         
-        # For tests we don't have external transforms; pass empty dict
+        # Pass transforms to table emission
         for table in model.tables:
-            emit_table_tmdl(tbl_dir, table, sources, transforms={})
+            emit_table_tmdl(tbl_dir, table, sources, transforms=transforms)
 
-        # Additional unit test: ensure partition transform injection works
-        print("\nTesting partition transform injection...")
+        # Additional unit test: ensure partition transform injection works with sequential steps
+        print("\nTesting partition transform sequential step injection...")
         from yaml2pbip.emit import generate_partition_mcode
-        # Create a navigation partition that references a transform named 'mytransform'
+        # Create a navigation partition that references transforms
         t_partition = Partition(
-            name="WithTransform",
+            name="WithTransforms",
             mode="import",
             use="sf_main",
             navigation=Navigation(database="SALES", schema="DIM", table="DATE"),
-            custom_steps=["mytransform"]
+            custom_steps=["proper_naming", "cast_numbers"]
         )
         t_table = Table(
             name="DimDate",
@@ -149,12 +156,14 @@ def test_emission():
             partitions=[t_partition],
             source={"use": "sf_main"}
         )
-        transforms = {"mytransform": "(t as table) as table => t"}
         mcode = generate_partition_mcode(t_partition, t_table, sources, transforms=transforms)
-        assert "__steps" in mcode, "__steps not present in partition M code"
-        assert "List.Accumulate" in mcode, "List.Accumulate not present in partition M code"
-        assert "mytransform" in mcode, "transform name not referenced in M code"
-        print("✓ Partition transform injection appears in generated M code")
+        # Check that transform bodies are directly injected (not wrapped in lambdas)
+        assert "__proper_naming_1 = Table.RenameColumns" in mcode, "Transform body should be directly injected without lambda wrapper"
+        assert "Table.RenameColumns(Typed," in mcode, "Parameter 't' should be replaced with 'Typed'"
+        assert "__cast_numbers_2 = Table.TransformColumnTypes" in mcode, "Second transform body should be directly injected"
+        assert "Table.TransformColumnTypes(__proper_naming_1," in mcode, "Second transform should use output of first transform"
+        assert "in\n  __cast_numbers_2" in mcode, "Final step __cast_numbers_2 should be returned in 'in' clause"
+        print("✓ Sequential transform steps with directly injected bodies appear in generated M code")
         
         emit_relationships_tmdl(def_dir, model)
         emit_report_by_path(rpt_dir, f"../{model.name}.SemanticModel")
@@ -181,12 +190,16 @@ def test_emission():
         print("\n--- model.tmdl ---")
         print((def_dir / "model.tmdl").read_text())
         
+        print("\n--- expressions.tmdl (first 50 lines) ---")
+        expr_content = (def_dir / "expressions.tmdl").read_text()
+        print("\n".join(expr_content.split("\n")[:50]))
+        
         print("\n--- _Measures.tmdl ---")
         print((tbl_dir / "_Measures.tmdl").read_text())
         
-        print("\n--- DimDate.tmdl (first 30 lines) ---")
+        print("\n--- DimDate.tmdl (first 40 lines) ---")
         content = (tbl_dir / "DimDate.tmdl").read_text()
-        print("\n".join(content.split("\n")[:30]))
+        print("\n".join(content.split("\n")[:40]))
         
         print("\n--- relationships.tmdl ---")
         print((def_dir / "relationships.tmdl").read_text())

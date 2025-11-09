@@ -2,6 +2,8 @@
 from __future__ import annotations
 from typing import List, Literal, Optional, Dict
 from pydantic import BaseModel, Field, field_validator, model_validator
+_HAS_PYDANTIC = True
+
 import re
 
 DataType = Literal["int64", "decimal", "double", "boolean", "string", "date", "dateTime", "time", "currency", "variant"]

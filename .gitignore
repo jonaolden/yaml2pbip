@@ -1,7 +1,7 @@
 venv/
 .roo/
 models/
-test-output
+test_output/
 opencode.json
 test/
 __pycache__/

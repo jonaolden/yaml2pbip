@@ -27,17 +27,17 @@ expression {{ key }} = ```
 {% endfor %}
 
 {% if transforms %}
-{% for name, body in transforms.items() -%}
-expression {{ name }} =
-{% for line in body.strip().splitlines() -%}
-      {{ line }}
-{% endfor %}
-    lineageTag: {{ generate_lineage_tag() }}
+{% for name, body in transforms.items() %}
+expression {{ name }} = ```
+{{ body.strip() }}
+	```
+	lineageTag: {{ generate_lineage_tag() }}
 
-    annotation PBI_IncludeFutureArtifacts = False
+	annotation PBI_IncludeFutureArtifacts = False
 {% if not loop.last %}
 
 {% endif %}
-{% endfor -%}
+{% endfor %}
 {% endif %}
+
 

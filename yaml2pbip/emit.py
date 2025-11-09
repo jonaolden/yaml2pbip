@@ -67,16 +67,14 @@ def emit_model_tmdl(def_dir: Path, model: ModelBody) -> None:
 
 
 def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict | None = None) -> None:
-    """Render and write expressions.tmdl with M source functions only.
+    """Render and write expressions.tmdl with M source functions.
 
-    Transforms are intentionally NOT emitted as named expressions anymore —
-    transforms are inlined directly into partition M code so they do not
-    appear as separate expression definitions.
+    Transforms are NOT emitted here - they are inlined directly into partition M code.
     """
     def_dir.mkdir(parents=True, exist_ok=True)
     env = _get_jinja_env()
     template = env.get_template("expressions.tmdl.j2")
-    # Do not render transforms as separate expressions; pass empty transforms
+    # Do NOT emit transforms - they're inlined into partitions
     content = template.render(sources=sources.sources, transforms={})
     (def_dir / "expressions.tmdl").write_text(content)
 
@@ -84,8 +82,8 @@ def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict 
 def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> str:
     """Generate Power Query M code for a partition with column policy logic.
 
-    This version inlines transform function bodies directly into the partition
-    M code instead of emitting them as separate expressions.
+    Transform bodies are inlined directly into the partition M code as:
+    __t1 = (transform_body)(seed), __t2 = (transform_body)(__t1), etc.
     """
     # Determine source key explicitly from partition.use or table.source.use
     source_key = partition.use
@@ -104,8 +102,8 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
 
     declared_cols = [(col.name, col.dataType) for col in table.columns]
     # Normalize transforms to an empty dict when None to satisfy static checkers
-    transforms: dict = transforms or {}
-    assert isinstance(transforms, dict)
+    transforms_dict: dict = transforms or {}
+    assert isinstance(transforms_dict, dict)
 
     def _build_snowflake_call(src: Source) -> str:
         parts = []
@@ -121,36 +119,41 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         else:
             return f'Snowflake.Databases("{src.server}")'
 
+    def _extract_param_name(transform_code: str) -> str:
+        """Extract parameter name from lambda function like '(t as table) as table => ...'"""
+        import re
+        # Match pattern: (param_name as type) as type
+        match = re.match(r'\s*\(\s*(\w+)\s+as\s+', transform_code)
+        if match:
+            return match.group(1)
+        return 't'  # Default fallback
+
+    def _extract_transform_body(transform_code: str, param_name: str) -> str:
+        """Extract body from lambda function, removing the parameter declaration."""
+        import re
+        # Pattern: (param as type) as type => body OR (param as type) as type \n body
+        # Find the body after the parameter declaration
+        pattern = rf'\(\s*{param_name}\s+as\s+[^)]+\)\s+as\s+\w+\s*(?:=>)?\s*(.*)'
+        match = re.search(pattern, transform_code, re.DOTALL)
+        if match:
+            body = match.group(1).strip()
+            return body
+        # If no match, return the whole code as fallback
+        return transform_code
+    
+    def _replace_param_in_body(body: str, param_name: str, replacement: str) -> str:
+        """Replace parameter name with actual variable, using word boundaries."""
+        import re
+        # Use word boundaries to avoid replacing partial matches
+        # Match param_name as a whole word (not part of another identifier)
+        pattern = rf'\b{re.escape(param_name)}\b'
+        return re.sub(pattern, replacement, body)
+
     lines = ["let"]
-
-    def _extract_func_body(func_text: str) -> str:
-        # crude extraction: take everything after the first '=>'
-        idx = func_text.find('=>')
-        if idx == -1:
-            raise ValueError("Transform function missing '=>' token")
-        return func_text[idx + 2 :].strip()
-
-    def _inline_transforms(prev_var: str) -> str:
-        # Emit named transform functions and a steps list, then use List.Accumulate
-        # to apply them sequentially. Returns the name of the final resulting variable.
-        # prev_var is the base table variable (e.g., Final)
-        for name in partition.custom_steps:
-            body = transforms[name].strip()
-            # Ensure previous line ends with a comma
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            lines.append(f'  {name} = {body},')
-        # Emit __steps list
-        steps_list = ", ".join(partition.custom_steps)
-        lines.append(f'  __steps = {{{steps_list}}},')
-        # Emit accumulated application, producing a new variable Final_transformed
-        final_var = "Final_transformed"
-        lines.append(f'  {final_var} = List.Accumulate(__steps, {prev_var}, (state, f) => f(state))')
-        return final_var
 
     # Validate custom transforms referenced by partition
     if partition.custom_steps:
-        missing = [name for name in partition.custom_steps if name not in (transforms or {})]
+        missing = [name for name in partition.custom_steps if name not in transforms_dict]
         if missing:
             raise ValueError(
                 f"Partition '{partition.name}' in table '{table.name}' references unknown transforms: {missing}"
@@ -185,6 +188,61 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
                 )
         return db_lines
 
+    def _emit_sequential_steps(seed_var: str) -> str:
+        """Emit sequential transform bindings with injected transform bodies.
+        
+        Transform bodies are extracted from lambda functions like "(t as table) as table => body"
+        and the parameter name is replaced with the actual input variable.
+        
+        The last transform step should NOT have a trailing comma since it's the
+        final step before the 'in' clause.
+        
+        Args:
+            seed_var: The base variable to apply first transform to (e.g., "Typed", "dim")
+            
+        Returns:
+            Name of the final variable after all transforms are applied
+        """
+        if not partition.custom_steps:
+            return seed_var
+        
+        curr_var = seed_var
+        for idx, step_name in enumerate(partition.custom_steps, start=1):
+            # Get the transform body from transforms_dict
+            if step_name not in transforms_dict:
+                raise ValueError(f"Transform '{step_name}' not found in transforms")
+            
+            transform_code = transforms_dict[step_name].strip()
+            
+            # Extract parameter name and body from lambda function
+            # Pattern: (param as type) as type => body OR (param as type) as type \n body
+            # We need to extract the parameter name (e.g., "t") and the body
+            param_name = _extract_param_name(transform_code)
+            transform_body = _extract_transform_body(transform_code, param_name)
+            
+            # Replace parameter name with current variable name using word boundaries
+            injected_body = _replace_param_in_body(transform_body, param_name, curr_var)
+            
+            # Ensure previous line ends with comma
+            if not lines[-1].strip().endswith(','):
+                lines[-1] = lines[-1] + ','
+            
+            # Last transform step should NOT have trailing comma
+            is_last = (idx == len(partition.custom_steps))
+            
+            # Generate step variable name
+            step_var = f'__{step_name}_{idx}' if step_name else f'__t{idx}'
+            
+            # Inject the transform body directly
+            if is_last:
+                lines.append(f'  {step_var} = {injected_body}')
+            else:
+                lines.append(f'  {step_var} = {injected_body},')
+            
+            curr_var = step_var
+        
+        return curr_var
+
     # Generate for navigation-based partitions
     if partition.navigation:
         nav = partition.navigation
@@ -195,20 +253,32 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         lines.append(f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],')
         lines.append(f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],')
 
-        # Inline type-step logic here to reduce indirection
+        # Apply column selection if needed
         if table.column_policy == "select_only" and declared_cols:
             col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
             lines.append(f"  Selected = Table.SelectColumns(TBL, {{{col_names}}}, MissingField.UseNull),")
-            lines.append(f"  Final = Selected")
+            seed_var = "Selected"
         else:
-            lines.append(f"  Final = TBL")
+            seed_var = "TBL"
 
-        final_return = "Final"
-        if partition.custom_steps:
-            final_return = _inline_transforms("Final")
+        # Apply declared column types as a literal list to avoid runtime warnings
+        if declared_cols:
+            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
+            # Ensure previous line ends with a comma
+            if not lines[-1].strip().endswith(','):
+                lines[-1] = lines[-1] + ','
+            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
+            seed_var = "Typed"
+
+        # Apply custom transform steps sequentially
+        final_var = _emit_sequential_steps(seed_var)
+
+        # If there are no transforms, ensure the last line doesn't have a trailing comma
+        if not partition.custom_steps and lines[-1].strip().endswith(','):
+            lines[-1] = lines[-1].rstrip(',')
 
         lines.append("in")
-        lines.append(f"  {final_return}")
+        lines.append(f"  {final_var}")
 
     elif partition.nativeQuery:
         sql = partition.nativeQuery.strip().replace('"', '\\"')
@@ -225,20 +295,31 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
 
         lines.append(f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),')
 
-        # Inline type-step logic here as well
+        # Apply column selection if needed
         if table.column_policy == "select_only" and declared_cols:
             col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
             lines.append(f"  Selected = Table.SelectColumns(Result, {{{col_names}}}, MissingField.UseNull),")
-            lines.append(f"  Final = Selected")
+            seed_var = "Selected"
         else:
-            lines.append(f"  Final = Result")
+            seed_var = "Result"
 
-        final_return = "Final"
-        if partition.custom_steps:
-            final_return = _inline_transforms("Final")
+        # Apply declared column types
+        if declared_cols:
+            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
+            if not lines[-1].strip().endswith(','):
+                lines[-1] = lines[-1] + ','
+            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
+            seed_var = "Typed"
+
+        # Apply custom transform steps sequentially
+        final_var = _emit_sequential_steps(seed_var)
+
+        # If there are no transforms, ensure the last line doesn't have a trailing comma
+        if not partition.custom_steps and lines[-1].strip().endswith(','):
+            lines[-1] = lines[-1].rstrip(',')
 
         lines.append("in")
-        lines.append(f"  {final_return}")
+        lines.append(f"  {final_var}")
 
     else:
         raise ValueError(f"Partition {partition.name} has neither navigation nor nativeQuery")

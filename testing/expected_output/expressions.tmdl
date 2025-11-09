@@ -1,0 +1,14 @@
+createOrReplace
+
+	expression snowflake = ```
+			let 
+			Source = Snowflake.Databases("xxxx-yyyyy.snowflakecomputing.com","ANALYTICS_WH",[Implementation="2.0"])
+			in
+			Source
+			```
+		lineageTag: 416eeafa-8a56-421b-a0e3-691d211c22ae
+
+		annotation PBI_NavigationStepName = Navigation
+
+		annotation PBI_ResultType = Table
+

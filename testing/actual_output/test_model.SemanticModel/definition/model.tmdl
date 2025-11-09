@@ -1,0 +1,3 @@
+model test_model
+  culture: en-US
+annotation PBI_ProTooling = ["TMDL-Extension"]

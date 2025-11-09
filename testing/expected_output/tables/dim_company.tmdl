@@ -1,0 +1,23 @@
+	table DIM_COMPANY
+		lineageTag: e258c5e2-41a0-47ac-ae5f-de5e4d875e83
+
+		partition DIM_COMPANY = m
+			mode: import
+			source =
+					let
+					 Source = snowflake,
+					  database = Source{[Name="PRD_DW_ANALYTICS",Kind="Database"]}[Data],
+						schema = database{[Name="REPORT_COMMON",Kind="Schema"]}[Data],
+					  target = schema{[Name="DIM_COMPANY",Kind="View"]}[Data],
+					__proper_casting_1 = let
+					    renamer = (name as text) as text =>
+					      if Text.EndsWith(name, "_KEY") then name
+					      else Text.Proper(Text.Replace(name, "_", " "))
+					  in
+					    Table.TransformColumnNames(target, renamer)
+					in
+					  __proper_casting_1
+
+		annotation PBI_ResultType = Table
+
+		annotation PBI_NavigationStepName = Navigation

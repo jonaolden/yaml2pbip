@@ -1,0 +1,24 @@
+# yaml2pbip Model Configuration Example
+# This file defines the semantic model structure including tables, measures, and relationships
+
+version: 1
+
+model:
+  name: test_model
+  culture: en-US
+
+  tables:
+
+    - name: dim_company
+      kind: table
+      column_policy: keep_all
+      
+      partitions:
+        - name: Full
+          mode: import
+          use: snowflake
+          navigation:
+            database: PRD_DW_ANALYTICS
+            schema: REPORT_COMMON
+            table: DIM_COMPANY
+          custom_steps: [ proper_casting ]

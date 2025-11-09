@@ -1,22 +1,14 @@
 {% for key, src in sources.items() %}
 expression {{ key }} = ```
+{% if src.kind == 'snowflake' %}
+{% include 'sources/snowflake.j2' %}
+{% else %}
+{# Fallback for unknown source types #}
 	let
-	    Source = Snowflake.Databases("{{ src.server }}", [
-{% if src.warehouse %}
-	      Warehouse = "{{ src.warehouse }}"{% if src.role or (src.options and src.options.queryTag) %},{% endif %}
-
-{% endif -%}
-{% if src.role %}
-	      Role = "{{ src.role }}"{% if src.options and src.options.queryTag %},{% endif %}
-
-{% endif -%}
-{% if src.options and src.options.queryTag %}
-	      QueryTag = "{{ src.options.queryTag }}"
-{% endif %}
-	    ]){% if src.database %},
-	    Database = Source{[Name = "{{ src.database }}", Kind = "Database"]}[Data]{% endif %}
+	    Source = error "Unsupported source kind: {{ src.kind }}"
 	in
-	    {% if src.database %}Database{% else %}Source{% endif %}
+	    Source
+{% endif %}
 			```
 	lineageTag: {{ generate_lineage_tag() }}
 

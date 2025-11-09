@@ -3,7 +3,8 @@ from pathlib import Path
 from typing import Dict, List
 
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-SIG = re.compile(r"^\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s+as\s+table\s*\)\s+as\s+table\s*=>", re.IGNORECASE | re.DOTALL)
+# Match either: (t as table) as table => OR (t as table) as table followed by newline/whitespace
+SIG = re.compile(r"^\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s+as\s+table\s*\)\s+as\s+table\s*(=>|\s)", re.IGNORECASE | re.DOTALL)
 
 
 def canonical_name(p: Path) -> str:
@@ -18,12 +19,16 @@ def canonical_name(p: Path) -> str:
 def validate_signature(text: str, src: Path) -> None:
     """Require a function with explicit table->table signature.
 
-    After normalization, the transform must start with:
+    The transform must start with:
         (t as table) as table =>
+    or
+        (t as table) as table
+        body...
+    
     The parameter name may vary, but it must be a valid identifier.
     """
     if not SIG.search(text):
-        raise ValueError(f"{src}: transform must start with '(t as table) as table >='")
+        raise ValueError(f"{src}: transform must start with '(t as table) as table =>' or '(t as table) as table' followed by newline")
 
 
 def _normalize_transform(text: str) -> str:
@@ -33,13 +38,16 @@ def _normalize_transform(text: str) -> str:
     block but omits the '=>' token. In that case we insert the '=>' after the
     signature line so the text becomes a valid anonymous function expression.
     """
-    if '=>' in text:
-        return text
     if '\n' not in text:
         return text
+    
+    # Split at first newline to check signature line
     first_line, rest = text.split('\n', 1)
-    if first_line.strip().startswith('(') and 'let' in rest:
+    
+    # Check if first line is a signature without '=>' and rest has 'let'
+    if first_line.strip().startswith('(') and '=>' not in first_line and 'let' in rest:
         return first_line + ' =>\n' + rest
+    
     return text
 
 

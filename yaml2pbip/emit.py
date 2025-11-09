@@ -23,12 +23,22 @@ def _generate_lineage_tag() -> str:
 def _get_jinja_env() -> Environment:
     """Create and configure Jinja2 environment for template rendering.
     
+    Searches all subdirectories under templates/ to allow organizing templates
+    into subfolders (e.g., templates/sources/snowflake.j2).
+    
     Returns:
         Configured Jinja2 Environment with templates loaded from yaml2pbip/templates/
     """
     template_dir = Path(__file__).parent / "templates"
+    
+    # Collect all directories under templates (root + subdirs)
+    search_paths = [str(template_dir)]
+    for p in template_dir.rglob("*"):
+        if p.is_dir():
+            search_paths.append(str(p))
+    
     env = Environment(
-        loader=FileSystemLoader(template_dir),
+        loader=FileSystemLoader(search_paths),
         autoescape=select_autoescape(),
         trim_blocks=True,
         lstrip_blocks=True

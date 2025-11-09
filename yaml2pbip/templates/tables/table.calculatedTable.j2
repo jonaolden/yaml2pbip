@@ -2,11 +2,13 @@ table '{{ table.name }}'
   lineageTag: {{ generate_lineage_tag() }}
 
 {% if table.calculatedTableDef and table.calculatedTableDef.expression %}
-  partition '{{ table.calculatedTableDef.expression[:50] }}' = calculated
+  partition '{{ table.name }}-Partition' = calculated
     mode: import
-    source = ```
-{{ table.calculatedTableDef.expression }}
-```
+    source = 
+{{ table.calculatedTableDef.expression | indent(8, first=True) }}
+
+{% else %}
+  # No calculated table expression defined
 {% endif %}
 
 {% for column in table.columns %}
@@ -16,7 +18,7 @@ table '{{ table.name }}'
     formatString: {{ column.formatString }}
 {% endif %}
 {% if column.isHidden %}
-    isHidden: {{ column.isHidden | lower }}
+    isHidden
 {% endif %}
     lineageTag: {{ generate_lineage_tag() }}
 {% endfor %}
@@ -32,7 +34,8 @@ table '{{ table.name }}'
     displayFolder: {{ measure.displayFolder }}
 {% endif %}
 {% if measure.isHidden %}
-    isHidden: {{ measure.isHidden | lower }}
+    isHidden
 {% endif %}
     lineageTag: {{ generate_lineage_tag() }}
+
 {% endfor %}

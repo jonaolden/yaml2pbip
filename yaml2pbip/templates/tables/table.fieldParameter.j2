@@ -1,13 +1,36 @@
 table '{{ table.name }}'
   lineageTag: {{ generate_lineage_tag() }}
 
-# Field parameter artifact
+  column '{{ table.name }} Fields'
+    dataType: string
+    lineageTag: {{ generate_lineage_tag() }}
+
+  column '{{ table.name }} Order'
+    dataType: int64
+    isHidden
+    lineageTag: {{ generate_lineage_tag() }}
+
 {% if table.columns %}
 {% for col in table.columns %}
   column '{{ col.name }}'
     dataType: {{ col.dataType }}
+{% if col.formatString %}
+    formatString: {{ col.formatString }}
+{% endif %}
     lineageTag: {{ generate_lineage_tag() }}
+
 {% endfor %}
-{% else %}
-  # No columns defined for field parameter
+{% endif %}
+
+{% if table.measures %}
+{% for measure in table.measures %}
+  measure '{{ measure.name }}' = ```
+{{ measure.expression }}
+```
+{% if measure.formatString %}
+    formatString: {{ measure.formatString }}
+{% endif %}
+    lineageTag: {{ generate_lineage_tag() }}
+
+{% endfor %}
 {% endif %}

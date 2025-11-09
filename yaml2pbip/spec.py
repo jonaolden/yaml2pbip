@@ -1,7 +1,7 @@
 """Pydantic models for yaml2pbip specification validation."""
 from __future__ import annotations
 from typing import List, Literal, Optional, Dict
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 _HAS_PYDANTIC = True
 
 import re
@@ -11,17 +11,27 @@ DataType = Literal["int64", "decimal", "double", "boolean", "string", "date", "d
 
 class SourceOptions(BaseModel):
     """Options for source configuration."""
+    model_config = ConfigDict(extra="allow")
+    
     implementation: Optional[Literal["1.0", "2.0"]] = None
     queryTag: Optional[str] = None
+    commandTimeout: Optional[int] = None
+    encryptConnection: Optional[bool] = None
+    trustServerCertificate: Optional[bool] = None
+    queryFolding: Optional[bool] = None
+    nativeQuery: Optional[bool] = None
+    useProxyGateway: Optional[bool] = None
+    sessionType: Optional[str] = None
 
 
 class Source(BaseModel):
     """Source connection configuration."""
-    kind: Literal["snowflake"]
+    kind: Literal["snowflake", "azuresql", "sqlserver", "databricks"]
     server: str
     warehouse: Optional[str] = None
     database: Optional[str] = None
     role: Optional[str] = None
+    path: Optional[str] = None  # For Databricks
     options: Optional[SourceOptions] = None
 
 
@@ -46,6 +56,19 @@ class Measure(BaseModel):
     formatString: Optional[str] = None
     displayFolder: Optional[str] = None
     isHidden: Optional[bool] = None
+
+
+class CalculationGroupItem(BaseModel):
+    """Calculation group item definition."""
+    name: str
+    expression: str
+    ordinal: Optional[int] = None
+
+
+class CalculatedTableDef(BaseModel):
+    """Definition for a calculated table with DAX expression."""
+    expression: str
+    description: Optional[str] = None
 
 
 class Navigation(BaseModel):
@@ -95,16 +118,44 @@ class Table(BaseModel):
     columns: List[Column] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
     partitions: List[Partition] = Field(default_factory=list)
+    # For calculatedTable: DAX expression
+    calculatedTableDef: Optional[CalculatedTableDef] = None
+    # For calculationGroup: list of calculation group items
+    calculationGroupItems: List[CalculationGroupItem] = Field(default_factory=list)
     source: Optional[Dict] = None  # passthrough; use Partition.use for actual binding
 
     @model_validator(mode='after')
-    def validate_measure_table(self):
-        """Validate that measureTable has no columns or partitions."""
+    def validate_table_kind_constraints(self):
+        """Validate table constraints based on table kind."""
         if self.kind == "measureTable":
+            # Measure tables must only have measures, no columns or partitions
             if self.columns:
                 raise ValueError("measureTable must not define columns")
             if self.partitions:
                 raise ValueError("measureTable must not define partitions")
+            if not self.measures:
+                raise ValueError("measureTable must define at least one measure")
+        elif self.kind == "calculatedTable":
+            # Calculated tables must not have partitions and must have DAX expression
+            if self.partitions:
+                raise ValueError("calculatedTable must not define partitions")
+            if not self.calculatedTableDef or not self.calculatedTableDef.expression:
+                raise ValueError("calculatedTable must define calculatedTableDef with expression")
+        elif self.kind == "fieldParameter":
+            # Field parameter tables must not have partitions
+            if self.partitions:
+                raise ValueError("fieldParameter must not define partitions")
+        elif self.kind == "calculationGroup":
+            # Calculation group tables must not have partitions and must have calculation group items
+            if self.partitions:
+                raise ValueError("calculationGroup must not define partitions")
+            if not self.calculationGroupItems:
+                raise ValueError("calculationGroup must define at least one calculationGroupItem")
+        elif self.kind == "table":
+            # Regular tables can have columns, measures, and partitions
+            # Validate that import/directquery tables have at least one partition
+            if not self.partitions:
+                raise ValueError("table kind 'table' must define at least one partition")
         return self
 
 

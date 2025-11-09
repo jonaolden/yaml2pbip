@@ -89,6 +89,22 @@ def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict 
     (def_dir / "expressions.tmdl").write_text(content)
 
 
+def generate_source_mcode(source: Source, source_key: str) -> str:
+    """Generate M code for a source connection using the appropriate template.
+    
+    Args:
+        source: Source specification
+        source_key: Key name for the source
+        
+    Returns:
+        M code string for the source
+    """
+    env = _get_jinja_env()
+    template_name = f"sources/{source.kind}.j2"
+    template = env.get_template(template_name)
+    return template.render(src=source)
+
+
 def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> str:
     """Generate Power Query M code for a partition with column policy logic.
 

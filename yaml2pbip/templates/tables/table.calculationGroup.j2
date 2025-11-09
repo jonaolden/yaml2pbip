@@ -1,24 +1,19 @@
 table '{{ table.name }}'
   lineageTag: {{ generate_lineage_tag() }}
 
-# Calculation group artifact
-{% if table.columns %}
-{% for col in table.columns %}
-  column '{{ col.name }}'
-    dataType: {{ col.dataType }}
-    lineageTag: {{ generate_lineage_tag() }}
-{% endfor %}
-{% endif %}
-{% if table.measures %}
-{% for m in table.measures %}
-  measure '{{ m.name }}' = ```
-{{ m.expression }}
+{% if table.calculationGroupItems %}
+{% for item in table.calculationGroupItems %}
+  calculationGroupItem '{{ item.name }}'
+    expression = ```
+{{ item.expression }}
 ```
-    lineageTag: {{ generate_lineage_tag() }}
-{% if m.formatString %}
-    formatString: {{ m.formatString }}
+{% if item.ordinal is not none %}
+    ordinal: {{ item.ordinal }}
 {% endif %}
+    lineageTag: {{ generate_lineage_tag() }}
+
 {% endfor %}
 {% else %}
-  # No measures defined for calculation group
+  # No calculation group items defined
 {% endif %}
+

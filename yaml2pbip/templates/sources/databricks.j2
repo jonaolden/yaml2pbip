@@ -1,0 +1,21 @@
+	let
+	    Source = Databricks.Contents([
+	      Hostname = "{{ src.server }}",
+	      Path = "{{ src.get('path', '/clusters') }}",
+{% if src.warehouse %}
+	      Warehouse = "{{ src.warehouse }}",
+{% endif %}
+{% if src.database %}
+	      Catalog = "{{ src.database }}",
+{% endif %}
+{% if src.options %}
+{% if src.options.get('useProxyGateway') %}
+	      UseProxyGateway = {{ src.options.get('useProxyGateway') | lower }},
+{% endif %}
+{% if src.options.get('sessionType') %}
+	      SessionType = "{{ src.options.get('sessionType') }}"
+{% endif %}
+{% endif %}
+	    ])
+	in
+	    Source

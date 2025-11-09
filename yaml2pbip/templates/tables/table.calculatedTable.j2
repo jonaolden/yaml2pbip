@@ -1,13 +1,38 @@
 table '{{ table.name }}'
   lineageTag: {{ generate_lineage_tag() }}
 
-{% if table.partitions and partition_mcode %}
-  partition {{ table.partitions[0].name }} = m
-    mode: {{ table.partitions[0].mode }}
+{% if table.calculatedTableDef and table.calculatedTableDef.expression %}
+  partition '{{ table.calculatedTableDef.expression[:50] }}' = calculated
+    mode: import
     source = ```
-{{ partition_mcode }}
+{{ table.calculatedTableDef.expression }}
 ```
-{% else %}
-  # Calculated table: DAX expression-based table
-  # Columns and expressions would be defined here if available
 {% endif %}
+
+{% for column in table.columns %}
+  column {{ column.name }}
+    dataType: {{ column.dataType }}
+{% if column.formatString %}
+    formatString: {{ column.formatString }}
+{% endif %}
+{% if column.isHidden %}
+    isHidden: {{ column.isHidden | lower }}
+{% endif %}
+    lineageTag: {{ generate_lineage_tag() }}
+{% endfor %}
+
+{% for measure in table.measures %}
+  measure '{{ measure.name }}' = ```
+{{ measure.expression }}
+```
+{% if measure.formatString %}
+    formatString: {{ measure.formatString }}
+{% endif %}
+{% if measure.displayFolder %}
+    displayFolder: {{ measure.displayFolder }}
+{% endif %}
+{% if measure.isHidden %}
+    isHidden: {{ measure.isHidden | lower }}
+{% endif %}
+    lineageTag: {{ generate_lineage_tag() }}
+{% endfor %}

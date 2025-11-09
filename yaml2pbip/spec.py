@@ -90,7 +90,7 @@ class Partition(BaseModel):
 class Table(BaseModel):
     """Table definition in the model."""
     name: str
-    kind: Literal["table", "measureTable"] = "table"
+    kind: Literal["table", "measureTable", "calculatedTable", "fieldParameter", "calculationGroup"] = "table"
     column_policy: Literal["select_only", "keep_all", "hide_extras"] = "select_only"
     columns: List[Column] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)

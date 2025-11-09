@@ -1,0 +1,13 @@
+table '{{ table.name }}'
+  lineageTag: {{ generate_lineage_tag() }}
+
+# Field parameter artifact
+{% if table.columns %}
+{% for col in table.columns %}
+  column '{{ col.name }}'
+    dataType: {{ col.dataType }}
+    lineageTag: {{ generate_lineage_tag() }}
+{% endfor %}
+{% else %}
+  # No columns defined for field parameter
+{% endif %}

@@ -99,6 +99,23 @@ class Partition(BaseModel):
     # Custom transforms (list of transform names)
     custom_steps: List[str] = Field(default_factory=list)
 
+    @field_validator("navigation", mode="before")
+    @classmethod
+    def parse_compact_navigation(cls, v):
+        """
+        Accept compact navigation strings of the form
+        'DATABASE.SCHEMA.TABLE' and convert them into the mapping
+        expected by the Navigation model.
+        """
+        if v is None:
+            return v
+        if isinstance(v, str):
+            parts = v.split(".")
+            if len(parts) != 3:
+                raise ValueError("navigation string must be 'database.schema.table'")
+            return {"database": parts[0], "schema": parts[1], "table": parts[2]}
+        return v
+
     @model_validator(mode='after')
     def validate_partition_type(self):
         """Validate that partition has correct fields based on mode."""
@@ -122,10 +139,44 @@ class Table(BaseModel):
     """Table definition in the model."""
     name: str
     kind: Literal["table", "measureTable", "calculatedTable", "fieldParameter", "calculationGroup"] = "table"
-    column_policy: Literal["select_only", "keep_all", "hide_extras"] = "select_only"
+    column_policy: Literal["select_only", "keep_all", "hide_extras"] = "keep_all"
     columns: List[Column] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
     partitions: List[Partition] = Field(default_factory=list)
+ 
+    @model_validator(mode="before")
+    @classmethod
+    def populate_partitions_and_defaults(cls, values):
+        """
+        Allow either a single partition mapping or a list in the YAML input.
+        If any partition omits 'name', populate it from the table name using
+        the required transformation: upper-case and replace spaces with '_'.
+        """
+        if not values:
+            return values
+        tbl_name = values.get("name")
+        parts = values.get("partitions")
+        if parts is None:
+            values["partitions"] = []
+            return values
+        # Normalize single-mapping into list
+        if isinstance(parts, dict):
+            parts = [parts]
+        normalized = []
+        for p in parts:
+            # p may already be a Partition instance / non-dict; preserve as-is
+            if not isinstance(p, dict):
+                normalized.append(p)
+                continue
+            if not p.get("name"):
+                if isinstance(tbl_name, str):
+                    p["name"] = tbl_name.upper().replace(" ", "_")
+                else:
+                    p["name"] = "PARTITION"
+            normalized.append(p)
+        values["partitions"] = normalized
+        return values
+ 
     # For calculatedTable: DAX expression
     calculatedTableDef: Optional[CalculatedTableDef] = None
     # For calculationGroup: list of calculation group items
@@ -169,13 +220,13 @@ class Table(BaseModel):
 
 class Relationship(BaseModel):
     """Relationship definition between tables.
-
+ 
     New usage: specify `using` as a single column name or a comma-separated
-    pair "fromCol, toCol". Older explicit `fromcolumn`/`tocolumn` fields are
+    pair "fromCol, toCol". Older explicit `fromcolumn`/tocolumn` fields are
     not required for the new template behavior.
     """
-    fromtable: str = Field(alias="fromtable")  # "Fact"
-    totable: str = Field(alias="totable")      # "Dim"
+    fromtable: str = Field(alias="from")  # "Fact" (YAML key 'from')
+    totable: str = Field(alias="to")      # "Dim"  (YAML key 'to')
     using: Optional[str] = None  # "Col" or "ColFrom, ColTo"
     cardinality: Literal["oneToOne", "oneToMany", "manyToOne"]
     crossFilter: Literal["single", "both"] = "single"

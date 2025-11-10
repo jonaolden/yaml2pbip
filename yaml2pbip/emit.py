@@ -162,18 +162,29 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
     assert isinstance(transforms_dict, dict)
 
     def _build_snowflake_call(src: Source) -> str:
-        parts = []
-        if src.warehouse:
-            parts.append(f'Warehouse = "{src.warehouse}"')
+        # Build Snowflake.Databases call with the warehouse as the second positional
+        # argument when provided. Only emit the options record (third argument)
+        # when there are named options like Role or QueryTag.
+        opts = []
         if src.role:
-            parts.append(f'Role = "{src.role}"')
-        if src.options and src.options.queryTag:
-            parts.append(f'QueryTag = "{src.options.queryTag}"')
-        if parts:
-            inner = ", ".join(parts)
-            return f'Snowflake.Databases("{src.server}", [{inner}])'
+            opts.append(f'Role = "{src.role}"')
+        if src.options and getattr(src.options, 'queryTag', None):
+            opts.append(f'QueryTag = "{src.options.queryTag}"')
+
+        # If warehouse present, use it as second positional argument
+        if src.warehouse:
+            if opts:
+                inner = ", ".join(opts)
+                return f'Snowflake.Databases("{src.server}", "{src.warehouse}", [{inner}])'
+            else:
+                return f'Snowflake.Databases("{src.server}", "{src.warehouse}")'
         else:
-            return f'Snowflake.Databases("{src.server}")'
+            # No warehouse; if we have opts, pass an options record as second arg
+            if opts:
+                inner = ", ".join(opts)
+                return f'Snowflake.Databases("{src.server}", [{inner}])'
+            else:
+                return f'Snowflake.Databases("{src.server}")'
 
     def _extract_param_name(transform_code: str) -> str:
         """Extract parameter name from lambda function like '(t as table) as table => ...'"""

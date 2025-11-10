@@ -169,18 +169,20 @@ class Table(BaseModel):
 
 class Relationship(BaseModel):
     """Relationship definition between tables."""
-    from_: str = Field(alias="from")  # "Fact[Col]"
-    to: str = Field(alias="to")       # "Dim[Col]"
+    fromtable: str = Field(alias="fromtable")  # "Fact"
+    fromcolumn: str = Field(alias="fromcolumn")  # "Fact[Col]"
+    totable: str = Field(alias="totable")        # "Dim"
+    tocolumn: str = Field(alias="tocolumn")      # "Dim[Col]"
     cardinality: Literal["oneToOne", "oneToMany", "manyToOne"]
     crossFilter: Literal["single", "both"] = "single"
     isActive: Optional[bool] = True
 
-    @field_validator("from_", "to")
+    @field_validator("fromtable", "totable", "fromcolumn", "tocolumn")
     @classmethod
-    def endpoint_syntax(cls, v):
-        """Validate relationship endpoint syntax (Table[Column])."""
-        if not re.match(r"^[A-Za-z_][\w ]*\[[A-Za-z_][\w ]*\]$", v):
-            raise ValueError("endpoint must be Table[Column]")
+    def no_brackets_in_relationships(cls, v):
+        """Validate that table and column names do not contain brackets."""
+        if '[' in v or ']' in v:
+            raise ValueError("relationship table and column names must not contain brackets")
         return v
 
 

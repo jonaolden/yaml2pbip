@@ -4,6 +4,6 @@ relationship {{ generate_lineage_tag() }}
   isActive: {{ 'true' if rel.isActive else 'false' }}
   fromCardinality: {{ 'many' if rel.cardinality == 'manyToOne' else 'one' if rel.cardinality == 'oneToMany' else 'one' }}
   toCardinality: {{ 'one' if rel.cardinality == 'manyToOne' else 'many' if rel.cardinality == 'oneToMany' else 'one' }}
-  fromColumn: {{ rel.from_ | replace('[', '.') | replace(']', '') }}
-  toColumn: {{ rel.to | replace('[', '.') | replace(']', '') }}
+  fromColumn: '{{ rel.fromtable }}'.'{{ rel.fromcolumn }}'
+  toColumn: '{{ rel.totable }}'.'{{ rel.tocolumn }}'
 {% endfor %}

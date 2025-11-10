@@ -1,17 +1,20 @@
 	let
-	    Source = Snowflake.Databases("{{ src.server }}", [
-{% if src.warehouse %}
-	      Warehouse = "{{ src.warehouse }}"{% if src.role or (src.options and src.options.queryTag) %},{% endif %}
-
-{% endif -%}
-{% if src.role %}
-	      Role = "{{ src.role }}"{% if src.options and src.options.queryTag %},{% endif %}
-
-{% endif -%}
-{% if src.options and src.options.queryTag %}
-	      QueryTag = "{{ src.options.queryTag }}"
-{% endif %}
-	    ]){% if src.database %},
+	    {%- set has_role = src.role is defined and src.role -%}
+	    {%- set has_querytag = src.options is defined and src.options.queryTag is defined and src.options.queryTag -%}
+	    {%- set has_opts = has_role or has_querytag -%}
+	    {%- if src.warehouse -%}
+	    Source = Snowflake.Databases("{{ src.server }}", "{{ src.warehouse }}"{%- if has_opts %}, [{% endif %}
+	    {%- if has_role %}Role = "{{ src.role }}"{%- if has_querytag %}, {% endif %}{% endif %}
+	    {%- if has_querytag %}QueryTag = "{{ src.options.queryTag }}"{%- endif %}
+	    {%- if has_opts %}]){%- else %}){%- endif %}
+	    {%- else -%}
+	    {%- if has_opts %}
+	    Source = Snowflake.Databases("{{ src.server }}", [{% if has_role %}Role = "{{ src.role }}"{% if has_querytag %}, {% endif %}{% endif %}{% if has_querytag %}QueryTag = "{{ src.options.queryTag }}"{% endif %}])
+	    {%- else -%}
+	    Source = Snowflake.Databases("{{ src.server }}")
+	    {%- endif %}
+	    {%- endif %}
+	    {%- if src.database %},
 	    Database = Source{[Name = "{{ src.database }}", Kind = "Database"]}[Data]{% endif %}
 	in
 	    {% if src.database %}Database{% else %}Source{% endif %}

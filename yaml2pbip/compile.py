@@ -3,12 +3,15 @@ from pathlib import Path
 import yaml
 import json
 import logging
+import re
 from typing import Optional
 
-from .spec import SourcesSpec, ModelSpec
+from .spec import SourcesSpec, ModelSpec, Table, Column
 from .emit import (
     emit_pbism,
     emit_model_tmdl,
+    emit_database_tmdl,
+    emit_culture_tmdl,
     emit_expressions_tmdl,
     emit_table_tmdl,
     emit_relationships_tmdl,
@@ -16,6 +19,118 @@ from .emit import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def infer_calculated_table_column_properties(table: Table) -> None:
+    """Infer sourceColumn and other properties for calculated table columns from DAX expression.
+    
+    For calculated tables with SUMMARIZE expressions, this function parses the DAX to identify:
+    - Direct column references (e.g., Financials[Product]) -> sets sourceColumn to Financials[Product]
+    - Calculated columns (e.g., "Total Profit", [Total Profit]) -> sets sourceColumn to Financials[Total Profit]
+    
+    Also sets isNameInferred=True for direct references and appropriate summarizeBy values.
+    
+    Args:
+        table: Table object to enrich with inferred properties (mutates in place)
+    """
+    if table.kind != "calculatedTable" or not table.calculatedTableDef:
+        return
+    
+    dax_expr = table.calculatedTableDef.expression
+    
+    # Build a mapping of column names to their source references
+    # Key: column name, Value: source reference
+    source_mapping = {}
+    
+    # Extract the base table from SUMMARIZE function (first argument)
+    # Pattern: SUMMARIZE ( TableName, ...
+    summarize_pattern = r'SUMMARIZE\s*\(\s*([A-Za-z_][\w ]*)\s*,'
+    summarize_match = re.search(summarize_pattern, dax_expr, re.IGNORECASE)
+    base_table = summarize_match.group(1).strip() if summarize_match else None
+    
+    # Pattern 1: Direct column references - TableName[ColumnName]
+    # Matches: Financials[Product], Financials[Country], etc.
+    # Pattern allows spaces in both table and column names
+    column_ref_pattern = r"([A-Za-z_][\w ]*)\[([^\]]+)\]"
+    column_refs = re.findall(column_ref_pattern, dax_expr)
+    
+    for table_name, col_name in column_refs:
+        # Check if this is NOT part of a calculated column definition
+        # Pattern: "NewColumnName", [Measure or Column]
+        # If we find a quoted string before this reference, it's a calculated column
+        calc_pattern = rf'"{col_name}"\s*,\s*\[{re.escape(col_name)}\]'
+        
+        if calc_pattern not in dax_expr:
+            # This is a direct column reference from source table
+            source_mapping[col_name] = f"{table_name}[{col_name}]"
+    
+    # Pattern 2: Calculated columns with measure references
+    # Matches: "Total Profit", [Total Profit]
+    # The column name in quotes becomes the new column, and [Measure] is the source
+    calc_col_pattern = r'"([^"]+)"\s*,\s*\[([^\]]+)\]'
+    calc_cols = re.findall(calc_col_pattern, dax_expr)
+    
+    for new_col_name, measure_name in calc_cols:
+        # For calculated columns, use the base table context for measure references
+        if base_table:
+            source_mapping[new_col_name] = f"{base_table}[{measure_name}]"
+        else:
+            # Fallback if we couldn't extract base table
+            source_mapping[new_col_name] = f"[{measure_name}]"
+    
+    # Enrich each column with inferred properties
+    for column in table.columns:
+        col_name = column.name
+        
+        if col_name in source_mapping:
+            source_ref = source_mapping[col_name]
+            column.sourceColumn = source_ref
+            
+            # Only set isNameInferred for direct table column references (not measures)
+            # Measure references will be in format TableName[MeasureName] but not have isNameInferred
+            # We distinguish by checking if this came from a calculated column pattern
+            is_direct_column = col_name in [cn for _, cn in column_refs 
+                                           if f'"{col_name}"' not in dax_expr]
+            if is_direct_column:
+                column.isNameInferred = True
+            
+            # Numeric types get summarizeBy: sum, others get none
+            if column.dataType in ("int64", "decimal", "double", "currency"):
+                column.summarizeBy = "sum"
+            else:
+                column.summarizeBy = "none"
+        else:
+            # Fallback: set summarizeBy even if no sourceColumn found
+            if column.dataType in ("int64", "decimal", "double", "currency"):
+                column.summarizeBy = "sum"
+            else:
+                column.summarizeBy = "none"
+
+
+def set_regular_table_column_properties(table: Table) -> None:
+    """Set sourceColumn and summarizeBy properties for regular table columns.
+    
+    For regular tables (kind='table'), this sets:
+    - sourceColumn: column name itself (e.g., "Country" not "TableName[Country]")
+    - summarizeBy: "sum" for numeric types, "none" for others
+    
+    Args:
+        table: Table object to enrich with properties (mutates in place)
+    """
+    if table.kind != "table":
+        return
+    
+    for column in table.columns:
+        # Set sourceColumn to the column name itself
+        if not column.sourceColumn:
+            column.sourceColumn = column.name
+        
+        # Set summarizeBy based on data type
+        if not column.summarizeBy:
+            if column.dataType in ("int64", "decimal", "double", "currency"):
+                column.summarizeBy = "sum"
+            else:
+                column.summarizeBy = "none"
 
 
 def compile_project(
@@ -100,9 +215,17 @@ def compile_project(
         emit_pbism(sm_dir)
         logger.debug(f"Created {sm_dir / 'definition.pbism'}")
         
+        # Emit database.tmdl with compatibility level
+        emit_database_tmdl(def_dir)
+        logger.debug(f"Created {def_dir / 'database.tmdl'}")
+        
         # Emit model.tmdl with model-level properties
         emit_model_tmdl(def_dir, spec.model)
         logger.debug(f"Created {def_dir / 'model.tmdl'}")
+        
+        # Emit culture info
+        emit_culture_tmdl(def_dir, spec.model.culture)
+        logger.debug(f"Created {def_dir / 'cultures' / spec.model.culture}.tmdl")
         
         # Resolve and load transforms into context
         from .discovery import resolve_transform_dirs
@@ -113,12 +236,20 @@ def compile_project(
         transforms = load_transforms(dirs, logger)
 
         # Emit expressions.tmdl with M source functions and transforms
-        emit_expressions_tmdl(def_dir, sources, transforms)
-        logger.debug(f"Created {def_dir / 'expressions.tmdl'}")
+        # DISABLED: Shared expressions cause composite model errors in Power BI
+        # emit_expressions_tmdl(def_dir, sources, transforms)
+        # logger.debug(f"Created {def_dir / 'expressions.tmdl'}")
         
         # Emit individual table TMDL files
         logger.info(f"Emitting {len(spec.model.tables)} table(s)...")
         for table in spec.model.tables:
+            # Set properties for regular tables
+            if table.kind == "table":
+                set_regular_table_column_properties(table)
+            # Infer sourceColumn properties for calculated tables
+            elif table.kind == "calculatedTable":
+                infer_calculated_table_column_properties(table)
+            
             emit_table_tmdl(tbl_dir, table, sources, transforms)
             logger.debug(f"Created {tbl_dir / table.name}.tmdl")
         
@@ -137,6 +268,7 @@ def compile_project(
             logger.debug(f"Created {rpt_dir / 'definition.pbir'}")
             
             # Create .pbip project file
+            # Note: Only the report artifact is listed; Power BI discovers the semantic model automatically
             pbip_content = {
                 "$schema": "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json",
                 "version": "1.0",
@@ -146,7 +278,10 @@ def compile_project(
                             "path": f"{spec.model.name}.Report"
                         }
                     }
-                ]
+                ],
+                "settings": {
+                    "enableAutoRecovery": True
+                }
             }
             
             pbip_path = root / f"{spec.model.name}.pbip"

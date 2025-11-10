@@ -1,2 +1,13 @@
 model {{ model.name }}
-  culture: {{ model.culture }}
+	culture: {{ model.culture }}
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+{% for table in model.tables -%}
+ref table {% if ' ' in table.name %}'{{ table.name }}'{% else %}{{ table.name }}{% endif %}
+
+{% endfor -%}
+ref cultureInfo {{ model.culture }}
+

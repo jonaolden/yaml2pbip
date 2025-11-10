@@ -26,12 +26,15 @@ class SourceOptions(BaseModel):
 
 class Source(BaseModel):
     """Source connection configuration."""
-    kind: Literal["snowflake", "azuresql", "sqlserver", "databricks"]
-    server: str
+    kind: Literal["snowflake", "azuresql", "sqlserver", "databricks", "excel"]
+    server: Optional[str] = None
     warehouse: Optional[str] = None
     database: Optional[str] = None
     role: Optional[str] = None
     path: Optional[str] = None  # For Databricks
+    file_path: Optional[str] = None  # For Excel
+    workbook_name: Optional[str] = None  # For Excel
+    description: Optional[str] = None
     options: Optional[SourceOptions] = None
 
 
@@ -47,6 +50,9 @@ class Column(BaseModel):
     dataType: DataType
     formatString: Optional[str] = None
     isHidden: Optional[bool] = None
+    sourceColumn: Optional[str] = None  # For calculated tables: references source like "Financials[Product]"
+    summarizeBy: Optional[Literal["none", "sum", "average", "count", "min", "max"]] = None
+    isNameInferred: Optional[bool] = None  # For calculated table columns that inherit from source
 
 
 class Measure(BaseModel):
@@ -63,6 +69,7 @@ class CalculationGroupItem(BaseModel):
     name: str
     expression: str
     ordinal: Optional[int] = None
+    formatString: Optional[str] = None
 
 
 class CalculatedTableDef(BaseModel):
@@ -102,9 +109,10 @@ class Partition(BaseModel):
             if self.navigation or self.nativeQuery:
                 raise ValueError("directLake partition should not have navigation or nativeQuery")
         else:
-            # M partition requires navigation or nativeQuery
-            if not self.navigation and not self.nativeQuery:
-                raise ValueError("import/directquery partition requires navigation or nativeQuery")
+            # M partition requires either navigation, nativeQuery, OR just a source reference (for simple sources like Excel)
+            # At least 'use' should be specified
+            if not self.use:
+                raise ValueError("import/directquery partition requires 'use' field to reference a source")
             if self.entityName or self.schemaName or self.expressionSource:
                 raise ValueError("import/directquery partition should not have entityName, schemaName, or expressionSource")
         return self

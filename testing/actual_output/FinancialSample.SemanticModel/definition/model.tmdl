@@ -1,0 +1,11 @@
+model FinancialSample
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+ref table Financials
+ref table 'Key Metrics'
+ref table Country
+ref cultureInfo en-US

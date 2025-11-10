@@ -1,41 +1,57 @@
 table '{{ table.name }}'
-  lineageTag: {{ generate_lineage_tag() }}
+	lineageTag: {{ generate_lineage_tag() }}
 
 {% if table.calculatedTableDef and table.calculatedTableDef.expression %}
-  partition '{{ table.name }}-Partition' = calculated
-    mode: import
-    source = 
-{{ table.calculatedTableDef.expression | indent(8, first=True) }}
+	partition '{{ table.name }}-Partition' = calculated
+		mode: import
+		source = {{ table.calculatedTableDef.expression.strip() | replace('\n', ' ') | replace('  ', ' ') }}
 
 {% else %}
-  # No calculated table expression defined
+	# No calculated table expression defined
 {% endif %}
 
 {% for column in table.columns %}
-  column {{ column.name }}
-    dataType: {{ column.dataType }}
+{% if ' ' in column.name %}
+	column '{{ column.name }}'
+{% else %}
+	column {{ column.name }}
+{% endif %}
 {% if column.formatString %}
-    formatString: {{ column.formatString }}
+		formatString: {{ column.formatString }}
+{% endif %}
+		lineageTag: {{ generate_lineage_tag() }}
+{% if column.summarizeBy %}
+		summarizeBy: {{ column.summarizeBy }}
+{% endif %}
+{% if column.isNameInferred %}
+		isNameInferred
+{% endif %}
+{% if column.sourceColumn %}
+		sourceColumn: {{ column.sourceColumn }}
 {% endif %}
 {% if column.isHidden %}
-    isHidden
+		isHidden
 {% endif %}
-    lineageTag: {{ generate_lineage_tag() }}
+{% if column.summarizeBy %}
+
+		annotation SummarizationSetBy = Automatic
+{% endif %}
+
 {% endfor %}
 
 {% for measure in table.measures %}
-  measure '{{ measure.name }}' = ```
+	measure '{{ measure.name }}' = ```
 {{ measure.expression }}
 ```
 {% if measure.formatString %}
-    formatString: {{ measure.formatString }}
+		formatString: {{ measure.formatString }}
 {% endif %}
 {% if measure.displayFolder %}
-    displayFolder: {{ measure.displayFolder }}
+		displayFolder: {{ measure.displayFolder }}
 {% endif %}
 {% if measure.isHidden %}
-    isHidden
+		isHidden
 {% endif %}
-    lineageTag: {{ generate_lineage_tag() }}
+		lineageTag: {{ generate_lineage_tag() }}
 
 {% endfor %}

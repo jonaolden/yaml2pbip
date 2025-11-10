@@ -1,0 +1,13 @@
+# yaml2pbip Sources Configuration - Financial Sample
+# Excel-based data source for comprehensive testing
+
+version: 1
+
+sources:
+  financial_excel:
+    kind: excel
+    description: "Financial Sample Excel workbook from Power BI Desktop"
+    file_path: "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftPowerBIDesktop_2.148.1226.0_x64__8wekyb3d8bbwe\\bin\\SampleData\\Financial Sample.xlsx"
+    sheet_name: "financials"
+
+

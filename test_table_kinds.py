@@ -11,6 +11,8 @@ from yaml2pbip.spec import (
     Measure,
     Partition,
     Navigation,
+    CalculatedTableDef,
+    CalculationGroupItem,
 )
 from yaml2pbip.emit import (
     emit_pbism,
@@ -74,13 +76,13 @@ def test_all_table_kinds():
             Table(
                 name="CalcTable",
                 kind="calculatedTable",
-                partitions=[
-                    Partition(
-                        name="Calc",
-                        mode="import",
-                        use="sf_main",
-                        navigation=Navigation(database="SALES", schema="DIM", table="CALC"),
-                    )
+                calculatedTableDef=CalculatedTableDef(
+                    expression="TOPN(10, DimProduct, [Total Sales], DESC)",
+                    description="Top 10 products by sales"
+                ),
+                columns=[
+                    Column(name="ProductID", dataType="string"),
+                    Column(name="Total Sales", dataType="decimal"),
                 ],
             ),
             # Field parameter
@@ -95,10 +97,16 @@ def test_all_table_kinds():
             Table(
                 name="CalcGroup",
                 kind="calculationGroup",
-                measures=[
-                    Measure(
-                        name="GroupMeasure",
-                        expression="1"
+                calculationGroupItems=[
+                    CalculationGroupItem(
+                        name="Current",
+                        expression="SELECTEDMEASURE()",
+                        ordinal=1
+                    ),
+                    CalculationGroupItem(
+                        name="YTD",
+                        expression="DATESYTD(DimDate[Date])",
+                        ordinal=2
                     ),
                 ],
             ),

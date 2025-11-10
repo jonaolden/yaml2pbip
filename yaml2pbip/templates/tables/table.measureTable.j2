@@ -1,19 +1,28 @@
 table '{{ table.name }}'
-  lineageTag: {{ generate_lineage_tag() }}
+	lineageTag: {{ generate_lineage_tag() }}
+
+	partition '{{ table.name }}' = m
+		mode: import
+		source =
+			let
+				Source = #table(type table[], {})
+			in
+				Source
 
 {% for m in table.measures %}
-  measure '{{ m.name }}' = ```
+	measure '{{ m.name }}' = ```
 {{ m.expression }}
 ```
-    lineageTag: {{ generate_lineage_tag() }}
+		lineageTag: {{ generate_lineage_tag() }}
 {% if m.formatString %}
-    formatString: {{ m.formatString }}
+		formatString: {{ m.formatString }}
 {% endif %}
 {% if m.displayFolder %}
-    displayFolder: {{ m.displayFolder }}
+		displayFolder: {{ m.displayFolder }}
 {% endif %}
 {% if m.isHidden %}
-    isHidden: true
+		isHidden: true
 {% endif %}
 
 {% endfor %}
+

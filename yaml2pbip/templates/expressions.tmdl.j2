@@ -2,6 +2,8 @@
 expression {{ key }} = ```
 {% if src.kind == 'snowflake' %}
 {% include 'sources/snowflake.j2' %}
+{% elif src.kind == 'excel' %}
+{% include 'sources/excel.j2' %}
 {% else %}
 {# Fallback for unknown source types #}
 	let

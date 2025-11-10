@@ -168,19 +168,28 @@ class Table(BaseModel):
 
 
 class Relationship(BaseModel):
-    """Relationship definition between tables."""
+    """Relationship definition between tables.
+
+    New usage: specify `using` as a single column name or a comma-separated
+    pair "fromCol, toCol". Older explicit `fromcolumn`/`tocolumn` fields are
+    not required for the new template behavior.
+    """
     fromtable: str = Field(alias="fromtable")  # "Fact"
-    fromcolumn: str = Field(alias="fromcolumn")  # "Fact[Col]"
-    totable: str = Field(alias="totable")        # "Dim"
-    tocolumn: str = Field(alias="tocolumn")      # "Dim[Col]"
+    totable: str = Field(alias="totable")      # "Dim"
+    using: Optional[str] = None  # "Col" or "ColFrom, ColTo"
     cardinality: Literal["oneToOne", "oneToMany", "manyToOne"]
     crossFilter: Literal["single", "both"] = "single"
     isActive: Optional[bool] = True
 
-    @field_validator("fromtable", "totable", "fromcolumn", "tocolumn")
+    @field_validator("fromtable", "totable", "using")
     @classmethod
     def no_brackets_in_relationships(cls, v):
-        """Validate that table and column names do not contain brackets."""
+        """Validate that table and column names (and using parts) do not contain brackets."""
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            return v
+        # `using` may contain a comma; ensure there are no bracket characters anywhere.
         if '[' in v or ']' in v:
             raise ValueError("relationship table and column names must not contain brackets")
         return v

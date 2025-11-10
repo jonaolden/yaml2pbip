@@ -4,6 +4,12 @@ relationship {{ generate_lineage_tag() }}
   isActive: {{ 'true' if rel.isActive else 'false' }}
   fromCardinality: {{ 'many' if rel.cardinality == 'manyToOne' else 'one' if rel.cardinality == 'oneToMany' else 'one' }}
   toCardinality: {{ 'one' if rel.cardinality == 'manyToOne' else 'many' if rel.cardinality == 'oneToMany' else 'one' }}
-  fromColumn: '{{ rel.fromtable }}'.'{{ rel.fromcolumn }}'
-  toColumn: '{{ rel.totable }}'.'{{ rel.tocolumn }}'
+  {% set using_parts = (rel.using or '').split(',') %}
+  {% if using_parts|length == 1 %}
+  fromColumn: '{{ rel.fromtable }}'.'{{ using_parts[0]|trim }}'
+  toColumn: '{{ rel.totable }}'.'{{ using_parts[0]|trim }}'
+  {% else %}
+  fromColumn: '{{ rel.fromtable }}'.'{{ using_parts[0]|trim }}'
+  toColumn: '{{ rel.totable }}'.'{{ using_parts[1]|trim }}'
+  {% endif %}
 {% endfor %}

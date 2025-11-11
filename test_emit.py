@@ -109,8 +109,9 @@ def test_emission():
         relationships=[
             Relationship(
                 **{
-                    "from": "FactSales[OrderDate]",
-                    "to": "DimDate[Date]",
+                    "from": "FactSales",
+                    "to": "DimDate",
+                    "using": "OrderDate, Date",
                     "cardinality": "manyToOne",
                     "crossFilter": "single"
                 }
@@ -157,13 +158,12 @@ def test_emission():
             source={"use": "sf_main"}
         )
         mcode = generate_partition_mcode(t_partition, t_table, sources, transforms=transforms)
-        # Check that transform bodies are directly injected (not wrapped in lambdas)
-        assert "__proper_naming_1 = Table.RenameColumns" in mcode, "Transform body should be directly injected without lambda wrapper"
-        assert "Table.RenameColumns(Typed," in mcode, "Parameter 't' should be replaced with 'Typed'"
-        assert "__cast_numbers_2 = Table.TransformColumnTypes" in mcode, "Second transform body should be directly injected"
-        assert "Table.TransformColumnTypes(__proper_naming_1," in mcode, "Second transform should use output of first transform"
+        # Check that transforms are embedded as complete let...in blocks
+        assert "__proper_naming_1 =" in mcode, "First transform should be assigned to __proper_naming_1"
+        assert "__cast_numbers_2 =" in mcode, "Second transform should be assigned to __cast_numbers_2"
+        assert "Table.RenameColumns(t," in mcode, "Transform body should reference parameter 't' (not replaced in original transform)"
         assert "in\n  __cast_numbers_2" in mcode, "Final step __cast_numbers_2 should be returned in 'in' clause"
-        print("✓ Sequential transform steps with directly injected bodies appear in generated M code")
+        print("✓ Sequential transform steps with embedded let...in blocks appear in generated M code")
         
         emit_relationships_tmdl(def_dir, model)
         emit_report_by_path(rpt_dir, f"../{model.name}.SemanticModel")

@@ -1,0 +1,18 @@
+
+table 'Country'
+	lineageTag: 12702dd3-504f-41ba-a6d2-8b621072431b
+
+	partition 'Country-Partition' = calculated
+		mode: import
+		source = DISTINCT(   Financials[Country]  )
+
+
+	column Country
+		lineageTag: 1ede5ef7-df88-498c-96c4-b8602bc47179
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: Financials[Country]
+
+		annotation SummarizationSetBy = Automatic
+
+

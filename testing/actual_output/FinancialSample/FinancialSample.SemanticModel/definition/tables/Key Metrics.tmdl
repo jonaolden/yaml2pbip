@@ -1,0 +1,68 @@
+
+table 'Key Metrics'
+	lineageTag: a5d4424a-25ae-4748-8545-5ebd7b9d9a46
+
+	partition 'Key Metrics' = m
+		mode: import
+		source =
+			let
+				Source = #table(type table[], {})
+			in
+				Source
+
+	measure 'Profit Margin %' = ```
+DIVIDE (
+  [Total Profit],
+  [Total Sales],
+  0
+) * 100
+
+```
+		lineageTag: 39eb9a61-7e60-45ef-b2db-798a8cce5151
+		formatString: 0.00%
+
+	measure 'Average Sale Price' = ```
+DIVIDE (
+  [Total Sales],
+  [Total Units Sold],
+  0
+)
+
+```
+		lineageTag: 73aa02e0-aee5-4931-ac3a-381dddac3973
+		formatString: $#,0.00
+
+	measure 'Discount %' = ```
+VAR TotalDiscounts = SUM ( Financials[Discounts] )
+VAR TotalGrossSales = SUM ( Financials[Gross Sales] )
+RETURN
+  DIVIDE (
+    TotalDiscounts,
+    TotalGrossSales,
+    0
+  ) * 100
+
+```
+		lineageTag: a16462f1-a7cd-4b61-af06-448357be5bbc
+		formatString: 0.00%
+
+	measure 'YTD Sales' = ```
+TOTALYTD (
+  [Total Sales],
+  Financials[Date]
+)
+
+```
+		lineageTag: 0fee05de-5519-486f-aad7-676793eee3a2
+		formatString: $#,0
+
+	measure 'YTD Profit' = ```
+TOTALYTD (
+  [Total Profit],
+  Financials[Date]
+)
+
+```
+		lineageTag: 2c82ccdd-0789-4ee5-b89d-76324025d2ee
+		formatString: $#,0
+

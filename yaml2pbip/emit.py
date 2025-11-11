@@ -7,6 +7,7 @@ import uuid
 import logging
 
 from .spec import ModelBody, Table, Partition, SourcesSpec, Source, Navigation
+from .transforms import render_transform_template
 
 logger = logging.getLogger(__name__)
 
@@ -186,133 +187,6 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
             else:
                 return f'Snowflake.Databases("{src.server}")'
 
-    def _extract_param_name(transform_code: str) -> str:
-        """Extract parameter name from lambda function like '(t as table) as table => ...'"""
-        import re
-        # Match pattern: (param_name as type) as type
-        match = re.match(r'\s*\(\s*(\w+)\s+as\s+', transform_code)
-        if match:
-            return match.group(1)
-        return 't'  # Default fallback
-
-    def _extract_transform_body(transform_code: str, param_name: str) -> tuple[list[str], str]:
-        """Extract variable definitions and final variable from transform's let...in block.
-        
-        Parses transform like:
-            (Sheet as table) as table =>
-            let
-                PromotedHeaders = Table.PromoteHeaders(Sheet, ...),
-                CleanedColumns = Table.TransformColumnNames(PromotedHeaders, ...)
-            in
-                CleanedColumns
-        
-        Returns:
-            (variable_definitions, final_variable) where variable_definitions is a list of 
-            M code lines like "PromotedHeaders = Table.PromoteHeaders(Sheet, ...)" and 
-            final_variable is the name returned (e.g., "CleanedColumns")
-        """
-        import re
-        
-        # Find the body after the parameter declaration
-        pattern = rf'\(\s*{param_name}\s+as\s+[^)]+\)\s+as\s+\w+\s*(?:=>)?\s*(.*)'
-        match = re.search(pattern, transform_code, re.DOTALL)
-        if not match:
-            # Fallback - return empty list and the whole code
-            return ([], transform_code)
-        
-        body = match.group(1).strip()
-        
-        # Now parse the let...in structure more carefully
-        # We need to find 'let' and 'in' keywords, but only at the right level
-        # Strategy: find the outermost 'let' and its matching 'in'
-        
-        # Find 'let' keyword (case insensitive, whole word)
-        let_match = re.search(r'\blet\b', body, re.IGNORECASE)
-        if not let_match:
-            # Not a let...in structure, return as-is
-            return ([], body)
-        
-        # Now find the matching 'in' keyword
-        # We need to be careful because 'in' can appear inside strings, comments, and expressions
-        # The safest approach is to find the last 'in' before the end of the body
-        # that appears at the start of a line or after whitespace
-        in_matches = list(re.finditer(r'\n\s*\bin\b', body, re.IGNORECASE))
-        if not in_matches:
-            # Try matching 'in' at any position as fallback
-            in_matches = list(re.finditer(r'\bin\b', body, re.IGNORECASE))
-        
-        if not in_matches:
-            # No 'in' found, malformed structure
-            return ([], body)
-        
-        # Use the last 'in' match (most likely to be the closing one)
-        in_match = in_matches[-1]
-        
-        # Extract the variable definitions between 'let' and 'in'
-        defs_section = body[let_match.end():in_match.start()].strip()
-        
-        # Extract the final variable after 'in'
-        final_section = body[in_match.end():].strip()
-        
-        # Parse variable definitions tracking brace/paren nesting
-        # Definitions are separated by commas, but only at nesting level 0
-        lines = defs_section.split('\n')
-        
-        variable_defs = []
-        current_def = []
-        in_definition = False
-        nesting_level = 0  # Track {} () [] nesting
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            # Skip empty lines entirely
-            if not stripped:
-                continue
-            
-            # Comments are part of the current definition if we're in one
-            if stripped.startswith('//'):
-                if in_definition:
-                    current_def.append(line)
-                continue
-            
-            # Check if this line starts a new definition: has '=' before any comma
-            # and we're not currently in a definition
-            if '=' in stripped and not in_definition:
-                # This starts a new definition
-                in_definition = True
-                current_def.append(line)
-                # Count braces/parens/brackets in this line
-                nesting_level += stripped.count('(') + stripped.count('{') + stripped.count('[')
-                nesting_level -= stripped.count(')') + stripped.count('}') + stripped.count(']')
-            elif in_definition:
-                # Continuation of current definition
-                current_def.append(line)
-                # Update nesting level
-                nesting_level += stripped.count('(') + stripped.count('{') + stripped.count('[')
-                nesting_level -= stripped.count(')') + stripped.count('}') + stripped.count(']')
-            
-            # Check if this line ends the current definition
-            # Only ends if we have a comma at nesting level 0
-            if in_definition and nesting_level == 0 and stripped.endswith(','):
-                # Definition complete
-                variable_defs.append('\n'.join(current_def))
-                current_def = []
-                in_definition = False
-        
-        # Add any remaining definition (last one typically won't have comma)
-        if current_def:
-            variable_defs.append('\n'.join(current_def))
-        
-        return (variable_defs, final_section)
-    
-    def _replace_param_in_body(body: str, param_name: str, replacement: str) -> str:
-        """Replace parameter name with actual variable, using word boundaries."""
-        import re
-        # Use word boundaries to avoid replacing partial matches
-        # Match param_name as a whole word (not part of another identifier)
-        pattern = rf'\b{re.escape(param_name)}\b'
-        return re.sub(pattern, replacement, body)
 
     lines = ["let"]
 
@@ -354,20 +228,10 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         return db_lines
 
     def _emit_sequential_steps(seed_var: str) -> str:
-        """Emit sequential transform bindings with flattened variable definitions.
+        """Emit sequential transform steps as complete let...in expressions.
         
-        Transform bodies are extracted from lambda functions like "(t as table) as table => body"
-        The let...in structure is flattened, extracting internal variable definitions and
-        inlining them at the same level as other partition variables.
-        
-        The last variable should NOT have a trailing comma since it's the
-        final step before the 'in' clause.
-        
-        Args:
-            seed_var: The base variable to apply first transform to (e.g., "Typed", "dim")
-            
-        Returns:
-            Name of the final variable after all transforms are applied
+        Each transform is rendered with Jinja2 and emitted as a single variable assignment.
+        Transforms use {% raw %} blocks to protect M code from Jinja2 interpretation.
         """
         if not partition.custom_steps:
             return seed_var
@@ -377,76 +241,49 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
         
         curr_var = seed_var
         for idx, step_name in enumerate(partition.custom_steps, start=1):
-            # Get the transform body from transforms_dict
             if step_name not in transforms_dict:
                 raise ValueError(f"Transform '{step_name}' not found in transforms")
             
             transform_code = transforms_dict[step_name].strip()
             
-            # Extract parameter name from lambda function
-            param_name = _extract_param_name(transform_code)
+            # Render Jinja2 with context
+            context = {
+                'input_var': curr_var,
+                'table_name': table.name,
+                'columns': declared_cols,
+                'column_names': ', '.join(f'"{col[0]}"' for col in declared_cols) if declared_cols else '',
+            }
+            transform_code = render_transform_template(transform_code, context)
             
-            # Extract variable definitions and final variable from the let...in block
-            var_defs, final_var = _extract_transform_body(transform_code, param_name)
+            # Extract body after lambda signature
+            match = re.search(r'\(\s*\w+\s+as\s+table\s*\)\s+as\s+table\s*(?:=>)?\s*(.*)', transform_code, re.DOTALL)
+            body = match.group(1).strip() if match else transform_code
             
-            # Ensure previous line ends with comma
-            if not lines[-1].strip().endswith(','):
+            var_name = f"__{step_name}_{idx}"
+            is_last = (idx == len(partition.custom_steps))
+            
+            # Ensure previous line has comma
+            if idx > 1 and not lines[-1].strip().endswith(','):
                 lines[-1] = lines[-1] + ','
             
-            # If no variable definitions found (inline expression), create a single variable
-            if not var_defs:
-                # Create a variable name from the step name
-                var_name = f"__{step_name}_{idx}"
-                # Replace parameter with current variable in the final expression
-                expression = _replace_param_in_body(final_var, param_name, curr_var)
-                is_last = (idx == len(partition.custom_steps))
-                if is_last:
-                    lines.append(f'  {var_name} = {expression}')
+            # Re-indent body - normalize all lines to 4-space indent relative to the assignment
+            dedented = textwrap.dedent(body)
+            indented_lines = []
+            for line in dedented.split('\n'):
+                stripped = line.strip()
+                if stripped:
+                    indented_lines.append(f'    {stripped}')
                 else:
-                    lines.append(f'  {var_name} = {expression},')
-                curr_var = var_name
-                continue
+                    indented_lines.append('')
+            body_text = '\n'.join(indented_lines)
             
-            # Inject each variable definition, replacing parameter name with current variable
-            for def_idx, var_def in enumerate(var_defs):
-                # Replace parameter name with current variable name using word boundaries
-                injected_def = _replace_param_in_body(var_def, param_name, curr_var)
-                
-                # Dedent to remove original indentation, then re-indent consistently
-                dedented = textwrap.dedent(injected_def)
-                # Split into lines and re-indent each line
-                def_lines = dedented.split('\n')
-                reindented_lines = []
-                for i, line in enumerate(def_lines):
-                    if i == 0:
-                        # First line gets 2-space indent
-                        reindented_lines.append(f'  {line}')
-                    else:
-                        # Continuation lines get 4-space indent
-                        reindented_lines.append(f'    {line}')
-                injected_def = '\n'.join(reindented_lines)
-                
-                # Remove trailing comma if present (we'll add it back consistently)
-                injected_def = injected_def.rstrip().rstrip(',')
-                
-                # Check if this is the last definition in the last transform
-                is_last_def = (def_idx == len(var_defs) - 1)
-                is_last_transform = (idx == len(partition.custom_steps))
-                
-                if is_last_def and is_last_transform:
-                    # Last definition of last transform - no comma
-                    lines.append(injected_def)
-                else:
-                    # Add comma
-                    lines.append(f'{injected_def},')
-                
-                # Update curr_var if this is the last definition
-                if is_last_def:
-                    # Extract variable name from this definition
-                    # Pattern: VarName = ...
-                    var_match = re.match(r'\s*(\w+)\s*=', injected_def)
-                    if var_match:
-                        curr_var = var_match.group(1)
+            # Emit transform
+            if is_last:
+                lines.append(f'  {var_name} =\n{body_text}')
+            else:
+                lines.append(f'  {var_name} =\n{body_text},')
+            
+            curr_var = var_name
         
         return curr_var
 

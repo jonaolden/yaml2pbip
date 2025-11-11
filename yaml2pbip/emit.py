@@ -6,8 +6,9 @@ import json
 import uuid
 import logging
 
-from .spec import ModelBody, Table, Partition, SourcesSpec, Source, Navigation
-from .transforms import render_transform_template
+from .spec import ModelBody, Table, Partition, SourcesSpec, Source
+from .mcode import MCodePartitionBuilder
+from .mcode.source_resolver import generate_inline_source_mcode
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,8 @@ def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict 
 def generate_source_mcode(source: Source, source_key: str) -> str:
     """Generate M code for a source connection using the appropriate template.
     
+    This is a backward-compatible wrapper around the new source_resolver module.
+    
     Args:
         source: Source specification
         source_key: Key name for the source
@@ -130,329 +133,58 @@ def generate_source_mcode(source: Source, source_key: str) -> str:
     Returns:
         M code string for the source
     """
-    env = _get_jinja_env()
-    template_name = f"sources/{source.kind}.j2"
-    template = env.get_template(template_name)
-    return template.render(src=source)
+    return generate_inline_source_mcode(source, source_key, inline=False)
 
 
 def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> str:
-    """Generate Power Query M code for a partition with column policy logic.
+    """Generate Power Query M code for a partition using the builder pattern.
 
-    Transform bodies are inlined directly into the partition M code as:
-    __t1 = (transform_body)(seed), __t2 = (transform_body)(__t1), etc.
-    """
-    # Determine source key explicitly from partition.use or table.source.use
-    source_key = partition.use
-    if not source_key and table.source and isinstance(table.source, dict):
-        source_key = table.source.get("use")
+    This function uses the MCodePartitionBuilder to construct M code in a modular,
+    maintainable way. All source-specific logic is handled through Jinja2 templates.
 
-    if not isinstance(source_key, str) or not source_key:
-        raise ValueError(f"Partition {partition.name} in table {table.name} has no source specified")
-
-    # Localize source_key as string for static checkers
-    s_key: str = source_key
-
-    source = sources.sources.get(s_key)
-    if not source:
-        raise ValueError(f"Source {s_key} not found in sources")
-
-    declared_cols = [(col.name, col.dataType) for col in table.columns]
-    # Normalize transforms to an empty dict when None to satisfy static checkers
-    transforms_dict: dict = transforms or {}
-    assert isinstance(transforms_dict, dict)
-
-    def _build_snowflake_call(src: Source) -> str:
-        # Build Snowflake.Databases call with the warehouse as the second positional
-        # argument when provided. Only emit the options record (third argument)
-        # when there are named options like Role or QueryTag.
-        opts = []
-        if src.role:
-            opts.append(f'Role = "{src.role}"')
-        if src.options and getattr(src.options, 'queryTag', None):
-            opts.append(f'QueryTag = "{src.options.queryTag}"')
-
-        # If warehouse present, use it as second positional argument
-        if src.warehouse:
-            if opts:
-                inner = ", ".join(opts)
-                return f'Snowflake.Databases("{src.server}", "{src.warehouse}", [{inner}])'
-            else:
-                return f'Snowflake.Databases("{src.server}", "{src.warehouse}")'
-        else:
-            # No warehouse; if we have opts, pass an options record as second arg
-            if opts:
-                inner = ", ".join(opts)
-                return f'Snowflake.Databases("{src.server}", [{inner}])'
-            else:
-                return f'Snowflake.Databases("{src.server}")'
-
-
-    lines = ["let"]
-
-    # Validate custom transforms referenced by partition
-    if partition.custom_steps:
-        missing = [name for name in partition.custom_steps if name not in transforms_dict]
-        if missing:
-            raise ValueError(
-                f"Partition '{partition.name}' in table '{table.name}' references unknown transforms: {missing}"
-            )
-        if partition.mode == "directquery":
-            logger.warning(
-                "Partition '%s' in table '%s' is DirectQuery and references transforms which may not fold: %s",
-                partition.name, table.name, partition.custom_steps
-            )
-
-    def _resolve_db(source: Source, source_key: str, nav: Navigation | None, require_nav_db: bool = False) -> list:
-        """Return lines needed to ensure a DB variable exists for the partition.
-
-        Instead of referencing shared expressions, this always generates inline Snowflake.Databases calls
-        to avoid composite model errors. Raises ValueError when neither source nor nav provide a database.
-        """
-        db_lines: list[str] = []
-        if nav and getattr(nav, "database", None):
-            # Always generate inline Snowflake.Databases call
-            sf_call = _build_snowflake_call(source)
-            db_lines.append(f'  SourceColl = {sf_call},')
-            db_lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
-        else:
-            if source.database:
-                # Generate inline Snowflake.Databases call instead of referencing source_key
-                sf_call = _build_snowflake_call(source)
-                db_lines.append(f'  SourceColl = {sf_call},')
-                db_lines.append(f'  DB = SourceColl{{[Name = "{source.database}", Kind = "Database"]}}[Data],')
-            elif require_nav_db:
-                raise ValueError(
-                    f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
-                )
-        return db_lines
-
-    def _emit_sequential_steps(seed_var: str) -> str:
-        """Emit sequential transform steps as complete let...in expressions.
-        
-        Each transform is rendered with Jinja2 and emitted as a single variable assignment.
-        Transforms use {% raw %} blocks to protect M code from Jinja2 interpretation.
-        """
-        if not partition.custom_steps:
-            return seed_var
-        
-        import re
-        import textwrap
-        
-        curr_var = seed_var
-        for idx, step_name in enumerate(partition.custom_steps, start=1):
-            if step_name not in transforms_dict:
-                raise ValueError(f"Transform '{step_name}' not found in transforms")
-            
-            transform_code = transforms_dict[step_name].strip()
-            
-            # Render Jinja2 with context
-            context = {
-                'input_var': curr_var,
-                'table_name': table.name,
-                'columns': declared_cols,
-                'column_names': ', '.join(f'"{col[0]}"' for col in declared_cols) if declared_cols else '',
-            }
-            transform_code = render_transform_template(transform_code, context)
-            
-            # Extract body after lambda signature
-            match = re.search(r'\(\s*\w+\s+as\s+table\s*\)\s+as\s+table\s*(?:=>)?\s*(.*)', transform_code, re.DOTALL)
-            body = match.group(1).strip() if match else transform_code
-            
-            var_name = f"__{step_name}_{idx}"
-            is_last = (idx == len(partition.custom_steps))
-            
-            # Ensure previous line has comma
-            if idx > 1 and not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            
-            # Re-indent body - normalize all lines to 4-space indent relative to the assignment
-            dedented = textwrap.dedent(body)
-            indented_lines = []
-            for line in dedented.split('\n'):
-                stripped = line.strip()
-                if stripped:
-                    indented_lines.append(f'    {stripped}')
-                else:
-                    indented_lines.append('')
-            body_text = '\n'.join(indented_lines)
-            
-            # Emit transform
-            if is_last:
-                lines.append(f'  {var_name} =\n{body_text}')
-            else:
-                lines.append(f'  {var_name} =\n{body_text},')
-            
-            curr_var = var_name
-        
-        return curr_var
-
-    # Generate for navigation-based partitions
-    if partition.navigation:
-        nav = partition.navigation
-
-        # Use helper to resolve DB lines (will raise if impossible)
-        lines.extend(_resolve_db(source, source_key, nav, require_nav_db=True))
-
-        lines.append(f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],')
-        lines.append(f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],')
-
-        # Apply column selection if needed
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns(TBL, {{{col_names}}}, MissingField.UseNull),")
-            seed_var = "Selected"
-        else:
-            seed_var = "TBL"
-
-        # Apply declared column types as a literal list to avoid runtime warnings
-        if declared_cols:
-            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
-            # Ensure previous line ends with a comma
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
-            seed_var = "Typed"
-
-        # Apply custom transform steps sequentially
-        final_var = _emit_sequential_steps(seed_var)
-
-        # If there are no transforms, ensure the last line doesn't have a trailing comma
-        if not partition.custom_steps and lines[-1].strip().endswith(','):
-            lines[-1] = lines[-1].rstrip(',')
-
-        lines.append("in")
-        lines.append(f"  {final_var}")
-
-    elif partition.nativeQuery:
-        sql = partition.nativeQuery.strip().replace('"', '\\"')
-
-        nav = partition.navigation
-        # Resolve DB for nativeQuery; if nav.database provided or source has database it will work
-        lines.extend(_resolve_db(source, source_key, nav, require_nav_db=False))
-
-        # If no DB lines resolved, then neither nav nor source provided database - error
-        if not any(l.strip().startswith('DB =') for l in lines):
-            raise ValueError(
-                f"Cannot run nativeQuery for partition '{partition.name}': source '{source_key}' has no database and partition has no navigation.database"
-            )
-
-        lines.append(f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),')
-
-        # Apply column selection if needed
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns(Result, {{{col_names}}}, MissingField.UseNull),")
-            seed_var = "Selected"
-        else:
-            seed_var = "Result"
-
-        # Apply declared column types
-        if declared_cols:
-            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
-            seed_var = "Typed"
-
-        # Apply custom transform steps sequentially
-        final_var = _emit_sequential_steps(seed_var)
-
-        # If there are no transforms, ensure the last line doesn't have a trailing comma
-        if not partition.custom_steps and lines[-1].strip().endswith(','):
-            lines[-1] = lines[-1].rstrip(',')
-
-        lines.append("in")
-        lines.append(f"  {final_var}")
-
-    else:
-        # Simple source reference (e.g., Excel, flat files)
-        # Inline the actual M code to avoid composite model errors
-        source_mcode = generate_source_mcode(source, s_key)
-        
-        # Parse the source M code to extract variable definitions and final variable
-        # The template generates: let\n  Source = ...,\n  Sheet = ...\nin\n  Sheet
-        # We need to extract the variable definitions and integrate them
-        source_lines = source_mcode.strip().split('\n')
-        
-        # Find lines between 'let' and 'in' - these are the variable definitions
-        in_definitions = False
-        source_final_var = None
-        
-        for line in source_lines:
-            stripped = line.strip()
-            if stripped == 'let':
-                in_definitions = True
-                continue
-            elif stripped.startswith('in'):
-                in_definitions = False
-                # Next line should contain the final variable name
-                continue
-            elif not in_definitions and source_final_var is None and stripped:
-                # This is the final variable returned by the source
-                source_final_var = stripped
-            elif in_definitions and stripped:
-                # Add the variable definition with proper comma handling and normalized indentation
-                # Replace tabs with spaces and normalize to 2-space indent
-                normalized_line = line.replace('\t', '  ').strip()
-                if not normalized_line.endswith(','):
-                    lines.append(f'  {normalized_line},')
-                else:
-                    lines.append(f'  {normalized_line}')
-        
-        # Use the source's final variable as the seed for subsequent transformations
-        seed_var = source_final_var if source_final_var else "Sheet"
-
-        # Apply column selection if needed
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns({seed_var}, {{{col_names}}}, MissingField.UseNull),")
-            seed_var = "Selected"
-
-        # Apply declared column types
-        if declared_cols:
-            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
-            seed_var = "Typed"
-
-        # Apply custom transform steps sequentially
-        final_var = _emit_sequential_steps(seed_var)
-
-        # If there are no transforms, ensure the last line doesn't have a trailing comma
-        if not partition.custom_steps and lines[-1].strip().endswith(','):
-            lines[-1] = lines[-1].rstrip(',')
-
-        lines.append("in")
-        lines.append(f"  {final_var}")
-
-    return "\n".join(lines)
-
-
-
-def _map_datatype_to_m(datatype: str) -> str:
-    """Map Pydantic DataType to M type.
-    
     Args:
-        datatype: DataType string from spec
-        
+        partition: Partition specification
+        table: Table specification containing columns and policies
+        sources: SourcesSpec containing available data sources
+        transforms: Optional dict of transform name -> M code
+
     Returns:
-        M type string
+        Complete M code string for the partition
+
+    Raises:
+        ValueError: If partition configuration is invalid or transforms are missing
     """
-    mapping = {
-        "int64": "Int64.Type",
-        "decimal": "Number.Type",
-        "double": "Number.Type",
-        "boolean": "Logical.Type",
-        "string": "Text.Type",
-        "date": "Date.Type",
-        "dateTime": "DateTime.Type",
-        "time": "Time.Type",
-        "currency": "Currency.Type",
-        "variant": "Any.Type"
-    }
-    return mapping.get(datatype, "Any.Type")
+    builder = MCodePartitionBuilder(partition, table, sources)
+    
+    # Build M code based on partition type
+    if partition.navigation:
+        # Navigation-based partition (database -> schema -> table)
+        return (builder
+                .add_source_connection()
+                .add_navigation()
+                .add_column_selection()
+                .add_type_transformation()
+                .add_custom_transforms(transforms)
+                .build())
+    
+    elif partition.nativeQuery:
+        # Native query partition (SQL executed on database)
+        return (builder
+                .add_source_connection()
+                .add_native_query()
+                .add_column_selection()
+                .add_type_transformation()
+                .add_custom_transforms(transforms)
+                .build())
+    
+    else:
+        # Simple source partition (e.g., Excel, CSV)
+        return (builder
+                .add_source_connection()
+                .add_column_selection()
+                .add_type_transformation()
+                .add_custom_transforms(transforms)
+                .build())
 
 
 def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> None:

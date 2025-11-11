@@ -143,39 +143,143 @@ class Table(BaseModel):
     columns: List[Column] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
     partitions: List[Partition] = Field(default_factory=list)
+    base_measures: Optional[Dict[str, str] | List[Dict[str, str]]] = None  # e.g., {"sum": "table.col1, table.col2"} or [{"sum": "..."}]
  
     @model_validator(mode="before")
     @classmethod
-    def populate_partitions_and_defaults(cls, values):
+    def populate_partitions_and_base_measures(cls, values):
         """
         Allow either a single partition mapping or a list in the YAML input.
         If any partition omits 'name', populate it from the table name using
         the required transformation: upper-case and replace spaces with '_'.
+        
+        Also processes base_measures to generate Measure objects automatically.
         """
         if not values:
             return values
         tbl_name = values.get("name")
+        
+        # Handle partitions
         parts = values.get("partitions")
         if parts is None:
             values["partitions"] = []
-            return values
-        # Normalize single-mapping into list
-        if isinstance(parts, dict):
-            parts = [parts]
-        normalized = []
-        for p in parts:
-            # p may already be a Partition instance / non-dict; preserve as-is
-            if not isinstance(p, dict):
+        else:
+            # Normalize single-mapping into list
+            if isinstance(parts, dict):
+                parts = [parts]
+            normalized = []
+            for p in parts:
+                # p may already be a Partition instance / non-dict; preserve as-is
+                if not isinstance(p, dict):
+                    normalized.append(p)
+                    continue
+                if not p.get("name"):
+                    if isinstance(tbl_name, str):
+                        p["name"] = tbl_name.upper().replace(" ", "_")
+                    else:
+                        p["name"] = "PARTITION"
                 normalized.append(p)
-                continue
-            if not p.get("name"):
-                if isinstance(tbl_name, str):
-                    p["name"] = tbl_name.upper().replace(" ", "_")
-                else:
-                    p["name"] = "PARTITION"
-            normalized.append(p)
-        values["partitions"] = normalized
+            values["partitions"] = normalized
+        
+        # Handle base_measures - expand into actual measure definitions
+        base_measures = values.get("base_measures")
+        if base_measures:
+            # Normalize base_measures to dict format
+            # Supports both dict and list of dicts (YAML list syntax)
+            if isinstance(base_measures, list):
+                # Convert list of single-key dicts to single dict
+                # e.g., [{"sum": "col1"}, {"avg": "col2"}] -> {"sum": "col1", "avg": "col2"}
+                normalized_base = {}
+                for item in base_measures:
+                    if isinstance(item, dict):
+                        normalized_base.update(item)
+                base_measures = normalized_base
+            
+            if isinstance(base_measures, dict) and base_measures:
+                existing_measures = values.get("measures", [])
+                if not isinstance(existing_measures, list):
+                    existing_measures = []
+                
+                generated_measures = cls._generate_measures_from_base(base_measures)
+                # Prepend generated measures so explicit measures can override
+                values["measures"] = generated_measures + existing_measures
+        
         return values
+    
+    @staticmethod
+    def _generate_measures_from_base(base_measures: Dict[str, str]) -> List[Dict]:
+        """Generate measure definitions from base_measures specification.
+        
+        Args:
+            base_measures: Dict mapping aggregation function to column references
+                          e.g., {"sum": "fact_sales.sales_amount, fact_sales.sales_profit",
+                                 "avg": "customer.rating"}
+        
+        Returns:
+            List of measure definition dicts
+        """
+        measures = []
+        
+        for agg_func, columns_str in base_measures.items():
+            # Parse comma-separated column references
+            column_refs = [col.strip() for col in columns_str.split(',')]
+            
+            for col_ref in column_refs:
+                if not col_ref:
+                    continue
+                
+                # Parse table.column format
+                if '.' in col_ref:
+                    table_name, column_name = col_ref.rsplit('.', 1)
+                else:
+                    # If no table specified, assume current table
+                    table_name = None
+                    column_name = col_ref
+                
+                # Generate measure name: {agg_func}_{column_name}
+                measure_name = f"{agg_func}_{column_name}"
+                
+                # Generate DAX expression based on aggregation function
+                if table_name:
+                    column_ref_dax = f"'{table_name}'[{column_name}]"
+                else:
+                    column_ref_dax = f"[{column_name}]"
+                
+                dax_expression = Table._generate_dax_expression(agg_func, column_ref_dax)
+                
+                measures.append({
+                    "name": measure_name,
+                    "expression": dax_expression
+                })
+        
+        return measures
+    
+    @staticmethod
+    def _generate_dax_expression(agg_func: str, column_ref: str) -> str:
+        """Generate DAX expression for a given aggregation function.
+        
+        Args:
+            agg_func: Aggregation function name (sum, avg, min, max, count, etc.)
+            column_ref: DAX column reference like 'Table'[Column] or [Column]
+        
+        Returns:
+            Complete DAX expression
+        """
+        agg_func_lower = agg_func.lower()
+        
+        # Map aggregation functions to DAX functions
+        dax_functions = {
+            "sum": f"SUM({column_ref})",
+            "avg": f"AVERAGE({column_ref})",
+            "average": f"AVERAGE({column_ref})",
+            "min": f"MIN({column_ref})",
+            "max": f"MAX({column_ref})",
+            "count": f"COUNT({column_ref})",
+            "countrows": f"COUNTROWS({column_ref})",
+            "distinctcount": f"DISTINCTCOUNT({column_ref})",
+        }
+        
+        return dax_functions.get(agg_func_lower, f"{agg_func.upper()}({column_ref})")
  
     # For calculatedTable: DAX expression
     calculatedTableDef: Optional[CalculatedTableDef] = None

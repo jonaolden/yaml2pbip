@@ -1,0 +1,87 @@
+version: 1
+model:
+  name: Sales Analytics
+  culture: en-US
+  
+  tables:
+    # Example 1: Fact table with bulk measures
+    - name: Sales
+      columns:
+        - name: sales_amount
+          dataType: decimal
+        - name: sales_profit
+          dataType: decimal
+        - name: quantity
+          dataType: int64
+        - name: customer_id
+          dataType: string
+      
+      # Bulk generate measures using base_measures
+      base_measures:
+        sum: sales_amount, sales_profit, quantity
+        avg: sales_amount, sales_profit
+        min: sales_amount
+        max: sales_amount
+        distinctcount: customer_id
+      
+      # Can still add custom measures alongside generated ones
+      measures:
+        - name: Profit Margin
+          expression: |
+            DIVIDE(
+                SUM([sales_profit]),
+                SUM([sales_amount]),
+                0
+            )
+          formatString: "0.0%"
+      
+      partitions:
+        - name: SALES
+          use: snowflake_source
+          mode: import
+          navigation: ANALYTICS_DB.SALES_SCHEMA.FACT_SALES
+    
+    # Example 2: Measure table with cross-table references
+    - name: Key Metrics
+      kind: measureTable
+      
+      # Reference columns from other tables
+      base_measures:
+        sum: Sales.sales_amount, Sales.sales_profit
+        avg: Customer.rating, Customer.satisfaction_score
+        distinctcount: Sales.customer_id, Orders.order_id
+      
+      # Additional custom measures
+      measures:
+        - name: Total Revenue Growth
+          expression: |
+            VAR CurrentRevenue = SUM(Sales[sales_amount])
+            VAR PreviousRevenue = CALCULATE(
+                SUM(Sales[sales_amount]),
+                DATEADD('Date'[Date], -1, YEAR)
+            )
+            RETURN
+            DIVIDE(CurrentRevenue - PreviousRevenue, PreviousRevenue, 0)
+          formatString: "0.0%"
+          displayFolder: Growth Metrics
+    
+    # Example 3: Simple table with minimal base_measures
+    - name: Products
+      columns:
+        - name: product_id
+          dataType: string
+        - name: unit_price
+          dataType: decimal
+        - name: cost
+          dataType: decimal
+      
+      base_measures:
+        avg: unit_price, cost
+        min: unit_price
+        max: unit_price
+      
+      partitions:
+        - name: PRODUCTS
+          use: snowflake_source
+          mode: import
+          navigation: ANALYTICS_DB.PRODUCT_SCHEMA.DIM_PRODUCTS

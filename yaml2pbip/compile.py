@@ -138,7 +138,6 @@ def compile_project(
     sources_yaml: Path,
     outdir: Path,
     stub_report: bool = True,
-    hide_extras_introspect: bool = False,
     transforms_dirs: list[str] | None = None
 ) -> None:
     """
@@ -192,12 +191,12 @@ def compile_project(
         spec = ModelSpec(**model_data)
         logger.info(f"Loaded model '{spec.model.name}' with {len(spec.model.tables)} table(s)")
         
-        # Log warning if hide_extras_introspect is enabled (MVP limitation)
-        if hide_extras_introspect:
-            logger.warning(
-                "hide_extras_introspect=True is not implemented in MVP. "
-                "Tables with column_policy='hide_extras' will be treated as 'keep_all'."
-            )
+        # # Log warning if hide_extras_introspect is enabled (MVP limitation)
+        # if hide_extras_introspect:
+        #     logger.warning(
+        #         "hide_extras_introspect=True is not implemented in MVP. "
+        #         "Tables with column_policy='hide_extras' will be treated as 'keep_all'."
+        #     )
         
         # Step 2: Create directory structure
         root = outdir

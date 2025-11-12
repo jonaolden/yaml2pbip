@@ -38,6 +38,16 @@ def main():
         required=True,
         help="Output directory for generated project"
     )
+    compile_parser.add_argument(
+        "--no-stub-report",
+        action="store_true",
+        help="Don't create a stub report"
+    )
+    # compile_parser.add_argument(
+    #     "--introspect-hide-extras",
+    #     action="store_true",
+    #     help="Enable introspection for hide_extras column policy (MVP: not yet implemented)"
+    # )
 
     compile_parser.add_argument(
         "--transforms-dir",
@@ -90,7 +100,7 @@ def main():
                 sources_yaml=args.sources_yaml,
                 outdir=args.out,
                 stub_report=not args.no_stub_report,
-                hide_extras_introspect=args.introspect_hide_extras,
+                # hide_extras_introspect=args.introspect_hide_extras,
                 transforms_dirs=args.transforms_dir
             )
             # Find the generated .pbip file to display in success message

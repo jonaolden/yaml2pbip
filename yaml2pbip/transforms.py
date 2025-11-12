@@ -9,8 +9,19 @@ SIG = re.compile(r"^\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s+as\s+table\s*\)\s+as\s+tabl
 
 
 def canonical_name(p: Path) -> str:
-    # file stem as identifier. replace invalid chars with underscore.
-    name = p.stem
+    """
+    Derive a canonical transform name from a file path.
+
+    Prefer the base filename without the multipart extension used for transforms
+    ('.m.j2') so names like 'proper_casting.m.j2' become 'proper_casting'.
+    """
+    name = p.name
+    # Strip only the multipart transform extension to match treatment used for
+    # other templated filenames (e.g. '.tmdl.j2' elsewhere).
+    if name.endswith('.m.j2'):
+        name = name[: -len('.m.j2')]
+
+    # Replace any remaining invalid chars with underscore
     safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
     if not IDENT.match(safe):
         safe = "_" + safe
@@ -94,31 +105,36 @@ def render_transform_template(transform_text: str, context: Dict = None) -> str:
 
 def load_transforms(dirs: List[Path], logger) -> Dict[str, str]:
     """Load transform files from directories.
-    
-    File naming conventions (in preference order):
-    1. *.m.j2 - M code with Jinja2 templating (preferred)
-    2. *.j2 - Jinja2 template (for non-M code)
-    3. *.m - Legacy M code without Jinja2 support (backward compatible)
-    
-    Prefers .m.j2 over .j2 over .m for same transform name.
+
+    File naming conventions:
+    *.m.j2 - M code with Jinja2 templating
+
+    Later directories in the provided list take precedence over earlier ones.
+    This allows model-specific transforms (e.g. models/NAME/transforms) to
+    override built-in or global transforms when they share the same canonical name.
     """
     merged: Dict[str, str] = {}
     origin: Dict[str, Path] = {}
-    for d in dirs:
-        # Load in preference order: .m.j2 > .j2 > .m
-        for pattern in ["*.m.j2", "*.j2", "*.m"]:
+
+    # Iterate directories in reverse so that later entries override earlier ones.
+    # Example: if dirs == [global_transforms, model_transforms], model_transforms
+    # will be loaded first and kept when a name collision occurs.
+    for d in reversed(dirs):
+        # Load .m.j2 files
+        for pattern in ["*.m.j2"]:
             for p in d.rglob(pattern):
                 name = canonical_name(p)
                 text = p.read_text(encoding="utf-8")
                 text = text.lstrip('\ufeff')
                 text = _normalize_transform(text)
                 validate_signature(text, p)
-                
-                # Skip if already loaded (prefer higher-precedence formats)
+
+                # If we've already loaded this name from a higher-precedence dir,
+                # skip the current file.
                 if name in merged:
-                    logger.debug(f"skipping {p}: transform '{name}' already loaded from {origin[name]}")
+                    logger.debug(f"Transformation '{name}' overwritten by {origin[name]}")
                     continue
-                
+
                 merged[name] = text
                 origin[name] = p
     return merged

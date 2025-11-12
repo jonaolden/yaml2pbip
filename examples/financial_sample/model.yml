@@ -90,7 +90,7 @@ model:
       
       partitions:
         - name: FinancialData
-          mode: import
+          mode: import # optional, default is import
           use: financial_excel
           custom_steps: [ clean_headers, convert_types ]
 

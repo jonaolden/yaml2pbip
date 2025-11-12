@@ -73,22 +73,29 @@ yaml2pbip compile --help
     definition.pbir
 ```
 
-## Minimal YAML overview
+## YAML spec overview
 
 sources.yml (connections):
 
 ```yaml
 version: 1
 sources:
-  sf_main:
-    kind: snowflake
+  snowflake:
+    kind: snowflake # other supported: excel | <other untested sources>
+    # snowflake specific: 
     server: your-account.snowflakecomputing.com
-    warehouse: WH
-    database: DB
-    role: ROLE
+    warehouse: <default_wh>
+    database: <default_db>
+    role: <default_role>
     options:
       implementation: "2.0"
-      queryTag: yaml2pbip
+      queryTag: <some_tag>
+
+  excel:
+    kind: excel
+    # sexcel
+    
+
 ```
 
 model.yml (model skeleton):
@@ -96,22 +103,27 @@ model.yml (model skeleton):
 ```yaml
 version: 1
 model:
-  name: ModelName
+  name: <model_name>
   culture: en-US
+
   tables:
-    - name: FactSales
-      kind: table
+    - name: <table_name>
+      kind: table | calculated_table | measure_table
       column_policy: keep_all
       source:
-        use: sf_main
-        navigation:
-          database: SALES
-          schema: FACT
-          table: SALES
+        use: <source_name> # example snowflake config
+        navigation: <database>.<schema>.<table> 
+
+    - name: Measure Table
+      kind: measure_table
+      base_measures: 
+        - sum <table_1>.<column_1>, <table_1>.<column_2>, ... <table_n>.<column_n>
+
   relationships:
-    - from: FactSales[OrderDate]
-      to: DimDate[Date]
-      cardinality: manyToOne
+    - from: <from_table>
+      to: <to_table>
+      using: <common_column_name> | <from_column_name>,<to_column_name>
+      cardinality: manyToOne | oneToOne | ManyToMany
 ```
 
 See examples in [`examples/`](examples/:1) for annotated, working files.
@@ -151,8 +163,3 @@ yaml2pbip/
   testing/             # unit tests and sample pbip artifacts
 ```
 
-## Version
-
-Current version: 0.1.0 (MVP)
-
-For full design notes see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md:1).

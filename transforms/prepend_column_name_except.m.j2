@@ -1,0 +1,10 @@
+(t as table) as table => 
+{% raw %}let renamer = (name as text) as text => {% endraw %}
+{%- if params is sequence %}
+  {% set prefix = params[0] %}
+  {% set exceptions = params[1:] %} 
+{%- else -%} 
+  {%- set prefix = params -%} 
+  {% set exceptions = [] %} 
+  {%- endif %} 
+  {% raw %} if ( {% endraw %} {%- if exceptions -%} {%- for p in exceptions -%} {% raw %} Text.EndsWith(name,"{% endraw %}{{ p }}{% raw %}"){% endraw %} {%- if not loop.last -%}{% raw %} or {% endraw %} {% endif %} {%- endfor %} {%- else %} {% raw %} false {% endraw %} {%- endif %} {% raw %} ) then name {% endraw %} {%- if not prefix %} {% raw %} else name {% endraw %} {%- else %} {% raw %} else "{% endraw %} {{ prefix }} {% raw %}"&" "& name {% endraw %} {%- endif %} {% raw %} in Table.TransformColumnNames( {% endraw %} {{ input_var }} {% raw %} , renamer) {% endraw %}

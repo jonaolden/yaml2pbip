@@ -1,20 +1,2 @@
 (t as table) as table =>
-{% raw %}
-let
-    // Detect environment
-    GetIPInfo = try Json.Document(Web.Contents("https://ipinfo.io/json")) otherwise null,
-    Org = if GetIPInfo <> null then Record.FieldOrDefault(GetIPInfo, "org", null) else null,
-    IsDesktop = Org <> null and not Text.Contains(Org, "Microsoft Corporation"),
-in
-{% endraw %}
-target = {{ input_var }}
-{% raw %}
-
-    // Apply filter only in Desktop
-    Result = if IsDesktop then Table.FirstN(target, 1000) else target
-in
-    Result
-
-{% endraw %}
-
-
+Table.FirstN({{ input_var }}, {{ params }}) 

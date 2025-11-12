@@ -1,8 +1,9 @@
 """M code partition builder with modular construction using builder pattern."""
 import re
+import ast
 import textwrap
 import logging
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any
 
 from ..spec import Partition, Table, Source, SourcesSpec, Navigation
 from ..transforms import render_transform_template
@@ -234,8 +235,13 @@ class MCodePartitionBuilder:
     def add_custom_transforms(self, transforms: Dict[str, str] | None = None) -> 'MCodePartitionBuilder':
         """Add custom transform steps sequentially.
         
-        Applies transforms specified in partition.custom_steps, rendering each
-        transform as a complete let...in expression.
+        Supports flexible custom_steps formats:
+          - ["name1", "name2"]                     # simple names
+          - [{"name":"n","params": {...}}, ...]    # explicit params dict
+          - [["name", params], ...]                # tuple/list shorthand
+          - [{"name": value}, ...]                 # single-key dict shorthand (value is params)
+        
+        Params are passed to the transform template as 'params' in the Jinja context.
         
         Args:
             transforms: Dictionary of transform name -> M code
@@ -244,15 +250,89 @@ class MCodePartitionBuilder:
             Self for method chaining
             
         Raises:
-            ValueError: If referenced transform not found
+            ValueError: If referenced transform not found or custom_steps malformed
         """
         if not self.partition.custom_steps:
             return self
         
         transforms_dict = transforms or {}
         
+        # Normalize steps into list of {"name": str, "params": any}
+        normalized_steps = []
+        for step in self.partition.custom_steps:
+            # Support string shorthand:
+            # - "name"
+            # - "name(123)"
+            # - "name('a','b')"
+            # - "name(a,b)" -> params becomes list
+            if isinstance(step, str):
+                # Support forms like:
+                #  - name
+                #  - name(123)
+                #  - name('a','b')
+                #  - name([1,2])   -> parse as actual list
+                #  - name({"a":1}) -> parse as mapping
+                m = re.match(r'^([A-Za-z0-9_]+)\s*\((.*)\)\s*$', step)
+                if m:
+                    name = m.group(1)
+                    raw = m.group(2).strip()
+                    if raw == "":
+                        params = None
+                    else:
+                        # If the raw looks like a Python/JSON literal (list/dict/number/string),
+                        # try to parse it safely with ast.literal_eval so arrays/maps are accepted.
+                        parsed_literal = None
+                        if (raw.startswith('[') and raw.endswith(']')) or (raw.startswith('{') and raw.endswith('}')) or \
+                           (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')) or \
+                           re.match(r'^\d+$', raw):
+                            try:
+                                parsed_literal = ast.literal_eval(raw)
+                            except Exception:
+                                parsed_literal = None
+                        if parsed_literal is not None:
+                            params = parsed_literal
+                        else:
+                            # Fallback: split on commas and parse simple scalars (ints or quoted strings)
+                            parts = [p.strip() for p in re.split(r'\s*,\s*', raw)]
+                            def _parse_part(p: str):
+                                if re.match(r'^\d+$', p):
+                                    return int(p)
+                                if (p.startswith('"') and p.endswith('"')) or (p.startswith("'") and p.endswith("'")):
+                                    return p[1:-1]
+                                return p
+                            parsed = [_parse_part(p) for p in parts]
+                            params = parsed[0] if len(parsed) == 1 else parsed
+                    normalized_steps.append({"name": name, "params": params})
+                else:
+                    normalized_steps.append({"name": step, "params": None})
+                continue
+
+            # List/tuple shorthand: [name, params]
+            if isinstance(step, (list, tuple)):
+                if len(step) == 0:
+                    raise ValueError(f"Empty custom_step entry in partition '{self.partition.name}'")
+                name = step[0]
+                params = step[1] if len(step) > 1 else None
+                normalized_steps.append({"name": name, "params": params})
+                continue
+
+            # Dict formats:
+            if isinstance(step, dict):
+                # Explicit form: {"name": "...", "params": ...}
+                if "name" in step:
+                    normalized_steps.append({"name": step["name"], "params": step.get("params")})
+                    continue
+                # Shorthand single-key: {"limit_rows_in_desktop": 500}
+                if len(step) == 1:
+                    k = next(iter(step.keys()))
+                    normalized_steps.append({"name": k, "params": step[k]})
+                    continue
+                raise ValueError(f"Invalid custom_step dict in partition '{self.partition.name}': {step}")
+
+            raise ValueError(f"Unsupported custom_step type {type(step)} in partition '{self.partition.name}'")
+        
         # Validate transforms exist
-        missing = [name for name in self.partition.custom_steps if name not in transforms_dict]
+        missing = [s["name"] for s in normalized_steps if s["name"] not in transforms_dict]
         if missing:
             raise ValueError(
                 f"Partition '{self.partition.name}' in table '{self.table.name}' "
@@ -266,20 +346,23 @@ class MCodePartitionBuilder:
                 "which may not fold: %s",
                 self.partition.name,
                 self.table.name,
-                self.partition.custom_steps
+                [s["name"] for s in normalized_steps]
             )
         
         # Apply transforms sequentially
         curr_var = self.seed_var
-        for idx, step_name in enumerate(self.partition.custom_steps, start=1):
+        for idx, step in enumerate(normalized_steps, start=1):
+            step_name = step["name"]
+            step_params = step.get("params")
             transform_code = transforms_dict[step_name].strip()
             
-            # Render Jinja2 template with context
+            # Render Jinja2 template with extended context (include params)
             context = {
                 'input_var': curr_var,
                 'table_name': self.table.name,
                 'columns': self.declared_cols,
                 'column_names': format_column_list(self.declared_cols),
+                'params': step_params,
             }
             transform_code = render_transform_template(transform_code, context)
             
@@ -291,8 +374,10 @@ class MCodePartitionBuilder:
             )
             body = match.group(1).strip() if match else transform_code
             
-            var_name = f"__{step_name}_{idx}"
-            is_last = (idx == len(self.partition.custom_steps))
+            # Sanitize var name (replace non-ident chars with '_')
+            safe_step = re.sub(r"[^A-Za-z0-9_]", "_", step_name)
+            var_name = f"__{safe_step}_{idx}"
+            is_last = (idx == len(normalized_steps))
             
             # Ensure previous line has comma
             if idx > 1 and not self.lines[-1].strip().endswith(','):

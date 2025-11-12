@@ -1,0 +1,19 @@
+(t as table) as table =>
+{% raw %}
+let
+  renamer = (name as text) as text =>
+{% endraw %}
+{%- if params is sequence -%}
+    if ( {%- for p in params -%}Text.EndsWith(name,"{{ p }}"){% if not loop.last %} or {% endif %}{%- endfor -%} ) then name
+{%- else -%}
+    if Text.EndsWith(name,"{{ params }}") then name
+{%- endif -%}
+{% raw %}
+    else Text.Proper(Text.Replace(name, "_", " "))
+in
+  Table.TransformColumnNames(
+{% endraw %}
+{{ input_var }}
+{% raw %}
+, renamer)
+{% endraw %}

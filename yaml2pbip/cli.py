@@ -38,16 +38,7 @@ def main():
         required=True,
         help="Output directory for generated project"
     )
-    compile_parser.add_argument(
-        "--no-stub-report",
-        action="store_true",
-        help="Don't create a stub report"
-    )
-    compile_parser.add_argument(
-        "--introspect-hide-extras",
-        action="store_true",
-        help="Enable introspection for hide_extras column policy (MVP: not yet implemented)"
-    )
+
     compile_parser.add_argument(
         "--transforms-dir",
         action="append",

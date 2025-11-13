@@ -1,51 +1,18 @@
-table '{{ table.name }}'
-  lineageTag: {{ generate_lineage_tag() }}
-{% if table.measures %}
-{% for measure in table.measures %}
+{# table.tmdl.j2 - dispatcher that routes to per-kind templates #}
+{% set kind = table.kind %}
 
-  measure '{{ measure.name }}' = ```
-  {{ measure.expression }}
-  ```
-    lineageTag: {{ generate_lineage_tag() }}
-{% if measure.formatString %}
-    formatString: {{ measure.formatString }}
-{% endif %}
-{% if measure.displayFolder %}
-    displayFolder: {{ measure.displayFolder }}
-{% endif %}
-{% if measure.isHidden is not none %}
-    isHidden: {{ measure.isHidden|lower }}
-{% endif %}
-{% endfor %}
-{% endif %}
-{% if table.kind == "table" %}
-{% for column in table.columns %}
-
-  column '{{ column.name }}'
-    dataType: {{ column.dataType }}
-    lineageTag: {{ generate_lineage_tag() }}
-{% if column.formatString %}
-    formatString: {{ column.formatString }}
-{% endif -%}
-{% if column.isHidden is not none %}
-    isHidden: {{ column.isHidden|lower }}
-{% endif -%}
-{% endfor %}
-{% for partition in table.partitions %}
-
-{% if partition.mode == "directLake" %}
-  partition {{ partition.name }} = entity
-    mode: {{ partition.mode }}
-    source
-      entityName: {{ partition.entityName }}
-      schemaName: {{ partition.schemaName }}
-      expressionSource: {{ partition.expressionSource }}
+{# Route to kind-specific template #}
+{% if kind == 'table' %}
+  {% include 'tables/table.table.j2' %}
+{% elif kind == 'measureTable' %}
+  {% include 'tables/table.measureTable.j2' %}
+{% elif kind == 'calculatedTable' %}
+  {% include 'tables/table.calculatedTable.j2' %}
+{% elif kind == 'fieldParameter' %}
+  {% include 'tables/table.fieldParameter.j2' %}
+{% elif kind == 'calculationGroup' %}
+  {% include 'tables/table.calculationGroup.j2' %}
 {% else %}
-  partition {{ partition.name }} = m
-    mode: {{ partition.mode }}
-    source = ```
-{{ partition_mcode }}
-```
-{% endif %}
-{% endfor %}
+  {# Fallback for unknown table kind #}
+  {% include 'tables/table.table.j2' %}
 {% endif %}

@@ -1,0 +1,14 @@
+	let
+	    Source = Sql.Database("{{ src.server }}", "{{ src.database }}", [
+{% if src.options and src.options.get('commandTimeout') %}
+	      CommandTimeout = #duration(0, 0, {{ src.options.get('commandTimeout') }}, 0),
+{% endif %}
+{% if src.options and src.options.get('encryptConnection') %}
+	      EncryptConnection = {{ src.options.get('encryptConnection') | lower }},
+{% endif %}
+{% if src.options and src.options.get('trustServerCertificate') %}
+	      TrustServerCertificate = {{ src.options.get('trustServerCertificate') | lower }}
+{% endif %}
+	    ])
+	in
+	    Source

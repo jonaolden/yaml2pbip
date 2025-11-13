@@ -1,0 +1,28 @@
+table '{{ table.name }}'
+  lineageTag: {{ generate_lineage_tag() }}
+
+  column Name
+    dataType: string
+    lineageTag: {{ generate_lineage_tag() }}
+
+{% if table.calculationGroupItems %}
+{% for item in table.calculationGroupItems %}
+  calculationItem '{{ item.name }}'
+{% if item.ordinal is not none %}
+    ordinal: {{ item.ordinal }}
+{% endif %}
+{% if item.formatString %}
+    formatString: {{ item.formatString }}
+{% endif %}
+{% if item.expression %}
+    expression = 
+{{ item.expression | indent(8, first=True) }}
+
+{% endif %}
+    lineageTag: {{ generate_lineage_tag() }}
+
+{% endfor %}
+{% else %}
+  # No calculation group items defined
+{% endif %}
+

@@ -1,0 +1,177 @@
+# yaml2pbip Model Configuration - Financial Sample
+# Demonstrates core table types: regular table, measure table, and calculated table
+
+version: 1
+
+model:
+  name: FinancialSample
+  culture: en-US
+
+  tables:
+    # ========================================
+    # Regular Table: Financial Facts
+    # ========================================
+    - name: Financials
+      kind: table
+      column_policy: select_only
+      columns:
+        - name: Segment
+          dataType: string
+        
+        - name: Country
+          dataType: string
+        
+        - name: Product
+          dataType: string
+        
+        - name: Discount Band
+          dataType: string
+        
+        - name: Units Sold
+          dataType: decimal
+          formatString: "#,0.00"
+        
+        - name: Manufacturing Price
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: Sale Price
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: Gross Sales
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: Discounts
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: Sales
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: COGS
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: Profit
+          dataType: decimal
+          formatString: "$#,0.00"
+        
+        - name: Date
+          dataType: dateTime
+        
+        - name: Month Number
+          dataType: int64
+        
+        - name: Month Name
+          dataType: string
+        
+        - name: Year
+          dataType: int64
+      
+      measures:
+        - name: Total Units Sold
+          expression: "SUM ( Financials[Units Sold] )"
+          formatString: "#,0.00"
+        
+        - name: Total Sales
+          expression: "SUM ( Financials[Sales] )"
+          formatString: "$#,0"
+        
+        - name: Total Profit
+          expression: "SUM ( Financials[Profit] )"
+          formatString: "$#,0"
+        
+        - name: Total COGS
+          expression: "SUM ( Financials[COGS] )"
+          formatString: "$#,0"
+      
+      partitions:
+        - name: FinancialData
+          mode: import # optional, default is import
+          use: financial_excel
+          custom_steps: [ clean_headers, convert_types ]
+
+    # ========================================
+    # Measure Table: Key Business Metrics
+    # ========================================
+    - name: Key Metrics
+      kind: measureTable
+      measures:
+        - name: Profit Margin %
+          expression: |
+            DIVIDE (
+              [Total Profit],
+              [Total Sales],
+              0
+            ) * 100
+          formatString: "0.00%"
+        
+        - name: Average Sale Price
+          expression: |
+            DIVIDE (
+              [Total Sales],
+              [Total Units Sold],
+              0
+            )
+          formatString: "$#,0.00"
+        
+        - name: Discount %
+          expression: |
+            VAR TotalDiscounts = SUM ( Financials[Discounts] )
+            VAR TotalGrossSales = SUM ( Financials[Gross Sales] )
+            RETURN
+              DIVIDE (
+                TotalDiscounts,
+                TotalGrossSales,
+                0
+              ) * 100
+          formatString: "0.00%"
+        
+        - name: YTD Sales
+          expression: |
+            TOTALYTD (
+              [Total Sales],
+              Financials[Date]
+            )
+          formatString: "$#,0"
+        
+        - name: YTD Profit
+          expression: |
+            TOTALYTD (
+              [Total Profit],
+              Financials[Date]
+            )
+          formatString: "$#,0"
+
+    # ========================================
+    # Calculated Table: Top Products by Profit
+    # ========================================
+    - name: Country
+      kind: calculatedTable
+      calculatedTableDef:
+        expression: |
+          DISTINCT(
+              Financials[Country]
+            )
+      columns:
+        - name: Country
+          dataType: string
+
+    # ========================================
+    # Note: Calculation Groups and Field Parameters removed
+    # These advanced table types cause TMDL parsing issues in some Power BI versions
+    # and are not required for basic project initialization
+    # ========================================
+
+  # ========================================
+  # Relationships (minimal - single table model)
+  # ========================================
+  relationships: []
+
+  # ========================================
+  # Security Roles
+  # ========================================
+  roles: []

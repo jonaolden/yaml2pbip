@@ -1,0 +1,45 @@
+table '{{ table.name }}'
+	lineageTag: {{ generate_lineage_tag() }}
+
+{% for col in table.columns %}
+	column '{{ col.name }}'
+		dataType: {{ col.dataType }}
+		lineageTag: {{ generate_lineage_tag() }}
+{% if col.formatString %}
+		formatString: {{ col.formatString }}
+{% endif %}
+{% if col.summarizeBy %}
+		summarizeBy: {{ col.summarizeBy }}
+{% endif %}
+{% if col.sourceColumn %}
+		sourceColumn: {{ col.sourceColumn }}
+{% endif %}
+{% if col.isHidden %}
+		isHidden: true
+{% endif %}
+
+{% endfor %}
+{% if table.partitions and partition_mcode %}
+	partition {{ table.name|upper|replace(' ', '_') }} = m
+		mode: {{ table.partitions[0].mode }}
+		source = ```
+{{ partition_mcode }}
+```
+
+{% endif %}
+{% for m in table.measures %}
+	measure '{{ m.name }}' = ```
+{{ m.expression }}
+```
+		lineageTag: {{ generate_lineage_tag() }}
+{% if m.formatString %}
+		formatString: {{ m.formatString }}
+{% endif %}
+{% if m.displayFolder %}
+		displayFolder: {{ m.displayFolder }}
+{% endif %}
+{% if m.isHidden %}
+		isHidden: true
+{% endif %}
+
+{% endfor %}

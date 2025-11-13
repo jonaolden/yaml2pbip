@@ -2,11 +2,12 @@
 from pathlib import Path
 from typing import Dict, List
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-import json
 import uuid
 import logging
 
-from .spec import ModelBody, Table, Partition, SourcesSpec, Source, Navigation
+from .spec import ModelBody, Table, Partition, SourcesSpec, Source
+from .mcode import MCodePartitionBuilder
+from .mcode.source_resolver import generate_inline_source_mcode
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,10 @@ def emit_pbism(sm_dir: Path) -> None:
         sm_dir: Path to SemanticModel directory
     """
     sm_dir.mkdir(parents=True, exist_ok=True)
-    pbism_content = {
-        "version": "1.0"
-    }
-    (sm_dir / "definition.pbism").write_text(json.dumps(pbism_content, indent=2))
+    env = _get_jinja_env()
+    template = env.get_template("definition.pbism.j2")
+    content = template.render()
+    (sm_dir / "definition.pbism").write_text(content)
 
 
 def emit_model_tmdl(def_dir: Path, model: ModelBody) -> None:
@@ -76,293 +77,126 @@ def emit_model_tmdl(def_dir: Path, model: ModelBody) -> None:
     (def_dir / "model.tmdl").write_text(content)
 
 
-def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict | None = None) -> None:
-    """Render and write expressions.tmdl with M source functions.
+def emit_database_tmdl(def_dir: Path) -> None:
+    """Render and write database.tmdl with compatibility level.
+    
+    Args:
+        def_dir: Path to definition directory
+    """
+    def_dir.mkdir(parents=True, exist_ok=True)
+    env = _get_jinja_env()
+    template = env.get_template("database.tmdl.j2")
+    content = template.render()
+    (def_dir / "database.tmdl").write_text(content)
 
-    Transforms are NOT emitted here - they are inlined directly into partition M code.
+
+def emit_culture_tmdl(def_dir: Path, culture: str) -> None:
+    """Render and write culture info TMDL file.
+    
+    Args:
+        def_dir: Path to definition directory
+        culture: Culture code (e.g., 'en-US')
+    """
+    cultures_dir = def_dir / "cultures"
+    cultures_dir.mkdir(parents=True, exist_ok=True)
+    env = _get_jinja_env()
+    template = env.get_template("culture.tmdl.j2")
+    content = template.render(culture=culture)
+    (cultures_dir / f"{culture}.tmdl").write_text(content)
+
+
+def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict | None = None) -> None:
+    """Render and write expressions.tmdl with M source functions AND transform functions.
+
+    Transforms are now emitted as expression functions (e.g., FxProperCasting) that can be
+    called from partition M code, following native Power Query patterns.
     """
     def_dir.mkdir(parents=True, exist_ok=True)
     env = _get_jinja_env()
     template = env.get_template("expressions.tmdl.j2")
-    # Do NOT emit transforms - they're inlined into partitions
-    content = template.render(sources=sources.sources, transforms={})
+    
+    # Generate function name mapping: transform_name -> FxTransformName
+    transform_functions = {}
+    if transforms:
+        for name, body in transforms.items():
+            # Convert "proper_casting" -> "FxProperCasting"
+            func_name = "Fx" + "".join(word.capitalize() for word in name.split("_"))
+            transform_functions[func_name] = body.strip()
+    
+    content = template.render(
+        sources=sources.sources,
+        transforms=transform_functions
+    )
     (def_dir / "expressions.tmdl").write_text(content)
 
 
-def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> str:
-    """Generate Power Query M code for a partition with column policy logic.
-
-    Transform bodies are inlined directly into the partition M code as:
-    __t1 = (transform_body)(seed), __t2 = (transform_body)(__t1), etc.
-    """
-    # Determine source key explicitly from partition.use or table.source.use
-    source_key = partition.use
-    if not source_key and table.source and isinstance(table.source, dict):
-        source_key = table.source.get("use")
-
-    if not isinstance(source_key, str) or not source_key:
-        raise ValueError(f"Partition {partition.name} in table {table.name} has no source specified")
-
-    # Localize source_key as string for static checkers
-    s_key: str = source_key
-
-    source = sources.sources.get(s_key)
-    if not source:
-        raise ValueError(f"Source {s_key} not found in sources")
-
-    declared_cols = [(col.name, col.dataType) for col in table.columns]
-    # Normalize transforms to an empty dict when None to satisfy static checkers
-    transforms_dict: dict = transforms or {}
-    assert isinstance(transforms_dict, dict)
-
-    def _build_snowflake_call(src: Source) -> str:
-        parts = []
-        if src.warehouse:
-            parts.append(f'Warehouse = "{src.warehouse}"')
-        if src.role:
-            parts.append(f'Role = "{src.role}"')
-        if src.options and src.options.queryTag:
-            parts.append(f'QueryTag = "{src.options.queryTag}"')
-        if parts:
-            inner = ", ".join(parts)
-            return f'Snowflake.Databases("{src.server}", [{inner}])'
-        else:
-            return f'Snowflake.Databases("{src.server}")'
-
-    def _extract_param_name(transform_code: str) -> str:
-        """Extract parameter name from lambda function like '(t as table) as table => ...'"""
-        import re
-        # Match pattern: (param_name as type) as type
-        match = re.match(r'\s*\(\s*(\w+)\s+as\s+', transform_code)
-        if match:
-            return match.group(1)
-        return 't'  # Default fallback
-
-    def _extract_transform_body(transform_code: str, param_name: str) -> str:
-        """Extract body from lambda function, removing the parameter declaration."""
-        import re
-        # Pattern: (param as type) as type => body OR (param as type) as type \n body
-        # Find the body after the parameter declaration
-        pattern = rf'\(\s*{param_name}\s+as\s+[^)]+\)\s+as\s+\w+\s*(?:=>)?\s*(.*)'
-        match = re.search(pattern, transform_code, re.DOTALL)
-        if match:
-            body = match.group(1).strip()
-            return body
-        # If no match, return the whole code as fallback
-        return transform_code
+def generate_source_mcode(source: Source, source_key: str) -> str:
+    """Generate M code for a source connection using the appropriate template.
     
-    def _replace_param_in_body(body: str, param_name: str, replacement: str) -> str:
-        """Replace parameter name with actual variable, using word boundaries."""
-        import re
-        # Use word boundaries to avoid replacing partial matches
-        # Match param_name as a whole word (not part of another identifier)
-        pattern = rf'\b{re.escape(param_name)}\b'
-        return re.sub(pattern, replacement, body)
-
-    lines = ["let"]
-
-    # Validate custom transforms referenced by partition
-    if partition.custom_steps:
-        missing = [name for name in partition.custom_steps if name not in transforms_dict]
-        if missing:
-            raise ValueError(
-                f"Partition '{partition.name}' in table '{table.name}' references unknown transforms: {missing}"
-            )
-        if partition.mode == "directquery":
-            logger.warning(
-                "Partition '%s' in table '%s' is DirectQuery and references transforms which may not fold: %s",
-                partition.name, table.name, partition.custom_steps
-            )
-
-    def _resolve_db(source: Source, source_key: str, nav: Navigation | None, require_nav_db: bool = False) -> list:
-        """Return lines needed to ensure a DB variable exists for the partition.
-
-        If nav is provided and specifies a database different from the source's declared database,
-        this emits a Snowflake.Databases call and DB resolution; otherwise it binds DB to the
-        source symbol. Raises ValueError when neither source nor nav provide a database.
-        """
-        db_lines: list[str] = []
-        if nav and getattr(nav, "database", None):
-            if source.database and nav.database == source.database:
-                db_lines.append(f'  DB = {source_key},')
-            else:
-                sf_call = _build_snowflake_call(source)
-                db_lines.append(f'  SourceColl = {sf_call},')
-                db_lines.append(f'  DB = SourceColl{{[Name = "{nav.database}", Kind = "Database"]}}[Data],')
-        else:
-            if source.database:
-                db_lines.append(f'  DB = {source_key},')
-            elif require_nav_db:
-                raise ValueError(
-                    f"Source '{source_key}' does not define a database; partition '{partition.name}' must specify navigation.database"
-                )
-        return db_lines
-
-    def _emit_sequential_steps(seed_var: str) -> str:
-        """Emit sequential transform bindings with injected transform bodies.
-        
-        Transform bodies are extracted from lambda functions like "(t as table) as table => body"
-        and the parameter name is replaced with the actual input variable.
-        
-        The last transform step should NOT have a trailing comma since it's the
-        final step before the 'in' clause.
-        
-        Args:
-            seed_var: The base variable to apply first transform to (e.g., "Typed", "dim")
-            
-        Returns:
-            Name of the final variable after all transforms are applied
-        """
-        if not partition.custom_steps:
-            return seed_var
-        
-        curr_var = seed_var
-        for idx, step_name in enumerate(partition.custom_steps, start=1):
-            # Get the transform body from transforms_dict
-            if step_name not in transforms_dict:
-                raise ValueError(f"Transform '{step_name}' not found in transforms")
-            
-            transform_code = transforms_dict[step_name].strip()
-            
-            # Extract parameter name and body from lambda function
-            # Pattern: (param as type) as type => body OR (param as type) as type \n body
-            # We need to extract the parameter name (e.g., "t") and the body
-            param_name = _extract_param_name(transform_code)
-            transform_body = _extract_transform_body(transform_code, param_name)
-            
-            # Replace parameter name with current variable name using word boundaries
-            injected_body = _replace_param_in_body(transform_body, param_name, curr_var)
-            
-            # Ensure previous line ends with comma
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            
-            # Last transform step should NOT have trailing comma
-            is_last = (idx == len(partition.custom_steps))
-            
-            # Generate step variable name
-            step_var = f'__{step_name}_{idx}' if step_name else f'__t{idx}'
-            
-            # Inject the transform body directly
-            if is_last:
-                lines.append(f'  {step_var} = {injected_body}')
-            else:
-                lines.append(f'  {step_var} = {injected_body},')
-            
-            curr_var = step_var
-        
-        return curr_var
-
-    # Generate for navigation-based partitions
-    if partition.navigation:
-        nav = partition.navigation
-
-        # Use helper to resolve DB lines (will raise if impossible)
-        lines.extend(_resolve_db(source, source_key, nav, require_nav_db=True))
-
-        lines.append(f'  SCH = DB{{[Name = "{nav.schema_}", Kind = "Schema"]}}[Data],')
-        lines.append(f'  TBL = SCH{{[Name = "{nav.table}", Kind = "Table"]}}[Data],')
-
-        # Apply column selection if needed
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns(TBL, {{{col_names}}}, MissingField.UseNull),")
-            seed_var = "Selected"
-        else:
-            seed_var = "TBL"
-
-        # Apply declared column types as a literal list to avoid runtime warnings
-        if declared_cols:
-            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
-            # Ensure previous line ends with a comma
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
-            seed_var = "Typed"
-
-        # Apply custom transform steps sequentially
-        final_var = _emit_sequential_steps(seed_var)
-
-        # If there are no transforms, ensure the last line doesn't have a trailing comma
-        if not partition.custom_steps and lines[-1].strip().endswith(','):
-            lines[-1] = lines[-1].rstrip(',')
-
-        lines.append("in")
-        lines.append(f"  {final_var}")
-
-    elif partition.nativeQuery:
-        sql = partition.nativeQuery.strip().replace('"', '\\"')
-
-        nav = partition.navigation
-        # Resolve DB for nativeQuery; if nav.database provided or source has database it will work
-        lines.extend(_resolve_db(source, source_key, nav, require_nav_db=False))
-
-        # If no DB lines resolved, then neither nav nor source provided database - error
-        if not any(l.strip().startswith('DB =') for l in lines):
-            raise ValueError(
-                f"Cannot run nativeQuery for partition '{partition.name}': source '{source_key}' has no database and partition has no navigation.database"
-            )
-
-        lines.append(f'  Result = Value.NativeQuery(DB, "{sql}", null, [EnableFolding = true]),')
-
-        # Apply column selection if needed
-        if table.column_policy == "select_only" and declared_cols:
-            col_names = ", ".join(f'"{col[0]}"' for col in declared_cols)
-            lines.append(f"  Selected = Table.SelectColumns(Result, {{{col_names}}}, MissingField.UseNull),")
-            seed_var = "Selected"
-        else:
-            seed_var = "Result"
-
-        # Apply declared column types
-        if declared_cols:
-            types_list = ", ".join(f'{{"{n}", {_map_datatype_to_m(t)}}}' for n, t in declared_cols)
-            if not lines[-1].strip().endswith(','):
-                lines[-1] = lines[-1] + ','
-            lines.append(f'  Typed = Table.TransformColumnTypes({seed_var}, {{{types_list}}}),')
-            seed_var = "Typed"
-
-        # Apply custom transform steps sequentially
-        final_var = _emit_sequential_steps(seed_var)
-
-        # If there are no transforms, ensure the last line doesn't have a trailing comma
-        if not partition.custom_steps and lines[-1].strip().endswith(','):
-            lines[-1] = lines[-1].rstrip(',')
-
-        lines.append("in")
-        lines.append(f"  {final_var}")
-
-    else:
-        raise ValueError(f"Partition {partition.name} has neither navigation nor nativeQuery")
-
-    return "\n".join(lines)
-
-
-
-def _map_datatype_to_m(datatype: str) -> str:
-    """Map Pydantic DataType to M type.
+    This is a backward-compatible wrapper around the new source_resolver module.
     
     Args:
-        datatype: DataType string from spec
+        source: Source specification
+        source_key: Key name for the source
         
     Returns:
-        M type string
+        M code string for the source
     """
-    mapping = {
-        "int64": "Int64.Type",
-        "decimal": "Number.Type",
-        "double": "Number.Type",
-        "boolean": "Logical.Type",
-        "string": "Text.Type",
-        "date": "Date.Type",
-        "dateTime": "DateTime.Type",
-        "time": "Time.Type",
-        "currency": "Currency.Type",
-        "variant": "Any.Type"
-    }
-    return mapping.get(datatype, "Any.Type")
+    return generate_inline_source_mcode(source, source_key, inline=False)
 
 
-def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> None:
+def generate_partition_mcode(partition: Partition, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> str:
+    """Generate Power Query M code for a partition using the builder pattern.
+
+    This function uses the MCodePartitionBuilder to construct M code in a modular,
+    maintainable way. All source-specific logic is handled through Jinja2 templates.
+
+    Args:
+        partition: Partition specification
+        table: Table specification containing columns and policies
+        sources: SourcesSpec containing available data sources
+        transforms: Optional dict of transform name -> M code
+
+    Returns:
+        Complete M code string for the partition
+
+    Raises:
+        ValueError: If partition configuration is invalid or transforms are missing
+    """
+    builder = MCodePartitionBuilder(partition, table, sources)
+    
+    # Build M code based on partition type
+    if partition.navigation:
+        # Navigation-based partition (database -> schema -> table)
+        return (builder
+                .add_source_connection()
+                .add_navigation()
+                .add_column_selection()
+                .add_type_transformation()
+                .add_custom_transforms(transforms)
+                .build())
+    
+    elif partition.nativeQuery:
+        # Native query partition (SQL executed on database)
+        return (builder
+                .add_source_connection()
+                .add_native_query()
+                .add_column_selection()
+                .add_type_transformation()
+                .add_custom_transforms(transforms)
+                .build())
+    
+    else:
+        # Simple source partition (e.g., Excel, CSV)
+        return (builder
+                .add_source_connection()
+                .add_column_selection()
+                .add_type_transformation()
+                .add_custom_transforms(transforms)
+                .build())
+
+
+def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transforms: dict | None = None, dax_templates: dict | None = None) -> None:
     """Render and write individual table TMDL with M code generation.
     
     Args:
@@ -370,8 +204,13 @@ def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transform
         table: Table definition
         sources: SourcesSpec for partition M code generation
         transforms: optional dict of named transforms to validate and pass through
+        dax_templates: optional dict of DAX template names to DAX expressions
     """
     tbl_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Note: DAX template resolution happens in compile.py before this function is called
+    # to ensure the expression is available for column property inference
+    
     env = _get_jinja_env()
     template = env.get_template("table.tmdl.j2")
     
@@ -414,14 +253,21 @@ def emit_report_by_path(rpt_dir: Path, rel_model_path: str) -> None:
         rel_model_path: Relative path to semantic model (e.g., "../ModelName.SemanticModel")
     """
     rpt_dir.mkdir(parents=True, exist_ok=True)
+    env = _get_jinja_env()
+    template = env.get_template("definition.pbir.j2")
+    content = template.render(rel_model_path=rel_model_path)
+    (rpt_dir / "definition.pbir").write_text(content)
+
+
+def emit_pbip_project(root: Path, model_name: str) -> None:
+    """Create .pbip project file.
     
-    pbir_content = {
-        "version": "1.0",
-        "datasetReference": {
-            "byPath": {
-                "path": rel_model_path
-            }
-        }
-    }
-    
-    (rpt_dir / "definition.pbir").write_text(json.dumps(pbir_content, indent=2))
+    Args:
+        root: Path to project root directory
+        model_name: Name of the model
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    env = _get_jinja_env()
+    template = env.get_template("project.pbip.j2")
+    content = template.render(model_name=model_name)
+    (root / f"{model_name}.pbip").write_text(content)

@@ -1,0 +1,154 @@
+table 'Calculated Table'
+	lineageTag: 6226e881-c928-4755-8910-27da38cc16ea
+
+	column Segment
+		lineageTag: 83316008-bb3e-4d40-bde1-de646334bf9e
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: financials[Segment]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Country
+		lineageTag: e85833f4-993e-4fb8-bde0-6cea62863a62
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: financials[Country]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Product
+		lineageTag: 04441640-863d-43cc-bcfb-4b9fcb9ff688
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: financials[Product]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Discount Band'
+		lineageTag: 2404fa41-0605-4187-a447-943ad55d3255
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: financials[Discount Band]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Units Sold'
+		lineageTag: 32ab2cb8-b3bf-4c51-8583-ccdcce37affb
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Units Sold]
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Manufacturing Price'
+		formatString: 0
+		lineageTag: 063f2f81-b611-4754-a6f5-0e1ea0e7224b
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Manufacturing Price]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Sale Price'
+		formatString: 0
+		lineageTag: 34ca4f43-ff05-458f-91ca-3f772bc24f33
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Sale Price]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Gross Sales'
+		lineageTag: 2fe3c764-1d49-4965-b32f-83343a82a073
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Gross Sales]
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Discounts
+		lineageTag: b42ef8fe-024e-4cd0-8b47-6e19cd6f3cf3
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Discounts]
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Sales
+		lineageTag: 97330471-14db-4b66-97c5-b993ae732ac8
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Sales]
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column COGS
+		lineageTag: 73c9c65d-2a56-4655-a9de-98b5de3a131c
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[COGS]
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Profit
+		lineageTag: 24250029-b710-4fd3-960f-59df53298c16
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Profit]
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Date
+		formatString: General Date
+		lineageTag: 0a4f0b65-6e1c-4a88-97d4-ca8ec873a964
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: financials[Date]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Month Number'
+		formatString: 0
+		lineageTag: 4b0dadf5-b6f6-4058-b5a4-5e8a14ab1109
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Month Number]
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Month Name'
+		lineageTag: b85ce64b-c100-4b6d-9078-d7066133a439
+		summarizeBy: none
+		isNameInferred
+		sourceColumn: financials[Month Name]
+
+		annotation SummarizationSetBy = Automatic
+
+	column Year
+		formatString: 0
+		lineageTag: 4da73b0d-a8d7-4388-9d96-aa3739818a78
+		summarizeBy: sum
+		isNameInferred
+		sourceColumn: financials[Year]
+
+		annotation SummarizationSetBy = Automatic
+
+	partition 'Calculated Table' = calculated
+		mode: import
+		source = financials
+
+	annotation PBI_Id = ff6514b12e114a77b00ba3ada864f3cf
+

@@ -7,3 +7,8 @@ test/
 __pycache__/
 *.pyc
 *.pyo
+
+.venv
+.venv_test
+.pytest_cache
+

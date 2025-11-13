@@ -1,0 +1,9 @@
+	let
+	    Source = Excel.Workbook(File.Contents("{{ src.file_path }}"), null, true),
+{% if src.sheet_name %}
+	    Sheet = Source{[Item="{{ src.sheet_name }}",Kind="Table"]}[Data]
+{% else %}
+	    Sheet = Source{[Item="sheet1",Kind="Table"]}[Data]
+{% endif %}
+	in
+	    Sheet

@@ -17,7 +17,6 @@ model:
         - name: Total Profit
           expression: "SUMX ( FactSales, FactSales[Revenue] - FactSales[Cost] )"
           formatString: "#,0.0"
-          description: "Total profit across all sales"
         
         - name: Profit Margin %
           expression: |
@@ -27,7 +26,6 @@ model:
               0
             ) * 100
           formatString: "0.00%"
-          description: "Profit margin percentage"
         
         - name: YTD Revenue
           expression: |
@@ -36,7 +34,6 @@ model:
               DimDate[Date]
             )
           formatString: "$#,0"
-          description: "Year-to-date revenue"
 
     # ========================================
     # Dimension Table: Date dimension
@@ -44,39 +41,30 @@ model:
     - name: DimDate
       kind: table
       column_policy: select_only
-      description: "Date dimension table for time intelligence"
       columns:
         - name: Date
           dataType: dateTime
-          description: "Calendar date"
         
         - name: Year
           dataType: int64
-          description: "Calendar year"
         
         - name: Quarter
           dataType: int64
-          description: "Calendar quarter (1-4)"
         
         - name: Month
           dataType: int64
-          description: "Month number (1-12)"
         
         - name: MonthName
           dataType: string
-          description: "Month name (January, February, etc.)"
         
         - name: DayOfWeek
           dataType: int64
-          description: "Day of week (1=Sunday, 7=Saturday)"
         
         - name: DayName
           dataType: string
-          description: "Day name (Monday, Tuesday, etc.)"
         
         - name: IsWeekend
           dataType: boolean
-          description: "True if Saturday or Sunday"
       partitions:
         - name: Full
           mode: import
@@ -85,7 +73,6 @@ model:
             database: SALES
             schema: DIM
             table: DATE
-          description: "Full date dimension import"
           custom_steps: [ proper_casting ]
 
 
@@ -95,32 +82,25 @@ model:
     - name: DimProduct
       kind: table
       column_policy: select_only
-      description: "Product dimension table"
       columns:
         - name: ProductKey
           dataType: int64
-          description: "Product surrogate key"
         
         - name: ProductID
           dataType: string
-          description: "Product business key"
         
         - name: ProductName
           dataType: string
-          description: "Product name"
         
         - name: Category
           dataType: string
-          description: "Product category"
         
         - name: SubCategory
           dataType: string
-          description: "Product sub-category"
         
         - name: UnitPrice
           dataType: decimal
           formatString: "$#,0.00"
-          description: "Standard unit price"
       partitions:
         - name: Full
           mode: import
@@ -129,14 +109,12 @@ model:
             database: SALES
             schema: DIM
             table: PRODUCT
-          description: "Full product dimension import"
           custom_steps: [ proper_casting ]
 
       measures:
         - name: Product Count
           expression: "COUNTROWS ( DimProduct )"
           formatString: "#,0"
-          description: "Total number of products"
 
     # ========================================
     # Fact Table: Sales transactions
@@ -144,68 +122,54 @@ model:
     - name: FactSales
       kind: table
       column_policy: keep_all
-      description: "Sales transactions fact table"
       columns:
         - name: OrderID
           dataType: int64
-          description: "Order identifier"
         
         - name: OrderLineID
           dataType: int64
-          description: "Order line identifier"
         
         - name: OrderDate
           dataType: dateTime
-          description: "Date of order"
         
         - name: ProductKey
           dataType: int64
-          description: "Foreign key to DimProduct"
         
         - name: Quantity
           dataType: int64
-          description: "Quantity sold"
         
         - name: UnitPrice
           dataType: decimal
           formatString: "$#,0.00"
-          description: "Unit price at time of sale"
         
         - name: Revenue
           dataType: decimal
           formatString: "$#,0.00"
-          description: "Total revenue (Quantity * UnitPrice)"
         
         - name: Cost
           dataType: decimal
           formatString: "$#,0.00"
-          description: "Total cost"
         
         - name: Discount
           dataType: decimal
           formatString: "$#,0.00"
-          description: "Discount amount applied"
       
       measures:
         - name: Total Orders
           expression: "DISTINCTCOUNT ( FactSales[OrderID] )"
           formatString: "#,0"
-          description: "Count of distinct orders"
         
         - name: Total Revenue
           expression: "SUM ( FactSales[Revenue] )"
           formatString: "$#,0"
-          description: "Sum of revenue"
         
         - name: Total Cost
           expression: "SUM ( FactSales[Cost] )"
           formatString: "$#,0"
-          description: "Sum of cost"
         
         - name: Total Quantity
           expression: "SUM ( FactSales[Quantity] )"
           formatString: "#,0"
-          description: "Total quantity sold"
         
         - name: Average Order Value
           expression: |
@@ -215,13 +179,11 @@ model:
               0
             )
           formatString: "$#,0.00"
-          description: "Average revenue per order"
       
       partitions:
         - name: CurrentYear
           mode: import
           use: sf_main
-          description: "Sales data for current year using native SQL"
           nativeQuery: |
             SELECT 
               OrderID,
@@ -237,6 +199,115 @@ model:
             WHERE OrderDate >= DATEADD(year, -1, CURRENT_DATE())
               AND OrderDate < CURRENT_DATE()
 
+    # ========================================
+    # Calculated Table: Top Products
+    # ========================================
+    - name: TopProducts
+      kind: calculatedTable
+      calculatedTableDef:
+        expression: |
+          TOPN (
+            10,
+            SELECTCOLUMNS (
+              DimProduct,
+              "ProductName", DimProduct[ProductName],
+              "Category", DimProduct[Category],
+              "TotalRevenue", [Total Revenue]
+            ),
+            [TotalRevenue],
+            DESC
+          )
+        description: "Top 10 products by revenue"
+      columns:
+        - name: ProductName
+          dataType: string
+        
+        - name: Category
+          dataType: string
+        
+        - name: TotalRevenue
+          dataType: decimal
+          formatString: "$#,0.00"
+      
+      measures:
+        - name: Top Products Count
+          expression: "COUNTROWS ( TopProducts )"
+          formatString: "#,0"
+
+    # ========================================
+    # Field Parameter: Product Selection
+    # ========================================
+    - name: ProductParameter
+      kind: fieldParameter
+      columns:
+        - name: ProductKey
+          dataType: int64
+        
+        - name: ProductName
+          dataType: string
+      
+      measures:
+        - name: Selected Product Revenue
+          expression: |
+            IF (
+              ISBLANK ( [_SelectedField] ),
+              [Total Revenue],
+              CALCULATE (
+                [Total Revenue],
+                [_SelectedField]
+              )
+            )
+          formatString: "$#,0"
+
+    # ========================================
+    # Calculation Group: Time Intelligence
+    # ========================================
+    - name: TimeIntelligence
+      kind: calculationGroup
+      calculationGroupItems:
+        - name: Current Period
+          expression: |
+            CALCULATE (
+              SELECTEDMEASURE (),
+              ALL ( DimDate )
+            )
+          ordinal: 1
+        
+        - name: Previous Period
+          expression: |
+            CALCULATE (
+              SELECTEDMEASURE (),
+              DATEADD ( DimDate[Date], -1, MONTH )
+            )
+          ordinal: 2
+        
+        - name: YTD
+          expression: |
+            CALCULATE (
+              SELECTEDMEASURE (),
+              DATESYTD ( DimDate[Date] )
+            )
+          ordinal: 3
+        
+        - name: YoY Growth %
+          expression: |
+            VAR CurrentPeriod = CALCULATE (
+              SELECTEDMEASURE (),
+              ALL ( DimDate )
+            )
+            VAR PreviousYear = CALCULATE (
+              SELECTEDMEASURE (),
+              DATEADD ( DimDate[Date], -1, YEAR )
+            )
+            RETURN
+              DIVIDE (
+                CurrentPeriod - PreviousYear,
+                PreviousYear,
+                0
+              ) * 100
+          formatString: "0.00%"
+          ordinal: 4
+
   # ========================================
   # Relationships
   # ========================================
@@ -246,14 +317,12 @@ model:
       to: DimDate[Date]
       cardinality: manyToOne
       crossFilter: single
-      description: "Links sales to date dimension"
     
     # Product relationships
     - from: FactSales[ProductKey]
       to: DimProduct[ProductKey]
       cardinality: manyToOne
       crossFilter: single
-      description: "Links sales to product dimension"
 
   # ========================================
   # Security Roles (empty for now)

@@ -1,0 +1,40 @@
+table Rate
+	lineageTag: 9869b9fb-dd47-44ed-a20c-13aa33f0e0b2
+
+	column RATE_ID
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: ecb6311e-4d50-4e48-840f-e2fc21320019
+		summarizeBy: count
+		sourceColumn: RATE_ID
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column 'Rate Code'
+		dataType: string
+		lineageTag: 33d4d07d-b97b-456a-8dea-a595101dbfd5
+		summarizeBy: none
+		sourceColumn: RATE_CODE
+
+		annotation SummarizationSetBy = Automatic
+
+	partition Rate = m
+		mode: import
+		source = ```
+				let
+									Source = Snowflake.Databases("sssss-xxx.snowflakecomputing.com","ANALYTICS_WH",[Implementation="2.0"]),
+									db = Source{[Name="PRD_DW_ANALYTICS",Kind="Database"]}[Data],
+									schema = db{[Name="REPORT_COMMON",Kind="Schema"]}[Data],
+									view = schema{[Name="DIM_RATE",Kind="View"]}[Data],
+					Cast = FxApplyDynamicTypes(view) 
+				in
+				Cast
+				```
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

@@ -187,7 +187,7 @@ def generate_partition_mcode(partition: Partition, table: Table, sources: Source
                 .build())
 
 
-def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transforms: dict | None = None) -> None:
+def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transforms: dict | None = None, dax_templates: dict | None = None) -> None:
     """Render and write individual table TMDL with M code generation.
     
     Args:
@@ -195,8 +195,13 @@ def emit_table_tmdl(tbl_dir: Path, table: Table, sources: SourcesSpec, transform
         table: Table definition
         sources: SourcesSpec for partition M code generation
         transforms: optional dict of named transforms to validate and pass through
+        dax_templates: optional dict of DAX template names to DAX expressions
     """
     tbl_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Note: DAX template resolution happens in compile.py before this function is called
+    # to ensure the expression is available for column property inference
+    
     env = _get_jinja_env()
     template = env.get_template("table.tmdl.j2")
     

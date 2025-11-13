@@ -73,9 +73,24 @@ class CalculationGroupItem(BaseModel):
 
 
 class CalculatedTableDef(BaseModel):
-    """Definition for a calculated table with DAX expression."""
-    expression: str
+    """Definition for a calculated table with DAX expression or template reference.
+    
+    Either `expression` or `template` must be provided, but not both.
+    - expression: Direct DAX code (e.g., "DISTINCT(Financials[Country])")
+    - template: Reference to a .dax file (e.g., "metadata_table" loads metadata_table.dax)
+    """
+    expression: Optional[str] = None
+    template: Optional[str] = None
     description: Optional[str] = None
+    
+    @model_validator(mode='after')
+    def validate_expression_or_template(self):
+        """Ensure exactly one of expression or template is provided."""
+        if self.expression and self.template:
+            raise ValueError("calculatedTableDef cannot have both 'expression' and 'template'")
+        if not self.expression and not self.template:
+            raise ValueError("calculatedTableDef must have either 'expression' or 'template'")
+        return self
 
 
 class Navigation(BaseModel):
@@ -299,11 +314,12 @@ class Table(BaseModel):
             if not self.measures:
                 raise ValueError("measureTable must define at least one measure")
         elif self.kind == "calculatedTable":
-            # Calculated tables must not have partitions and must have DAX expression
+            # Calculated tables must not have partitions and must have DAX expression or template
             if self.partitions:
                 raise ValueError("calculatedTable must not define partitions")
-            if not self.calculatedTableDef or not self.calculatedTableDef.expression:
-                raise ValueError("calculatedTable must define calculatedTableDef with expression")
+            if not self.calculatedTableDef:
+                raise ValueError("calculatedTable must define calculatedTableDef")
+            # The CalculatedTableDef validator ensures exactly one of expression or template is set
         elif self.kind == "fieldParameter":
             # Field parameter tables must not have partitions
             if self.partitions:

@@ -138,7 +138,8 @@ def compile_project(
     sources_yaml: Path,
     outdir: Path,
     stub_report: bool = True,
-    transforms_dirs: list[str] | None = None
+    transforms_dirs: list[str] | None = None,
+    dax_dirs: list[str] | None = None
 ) -> None:
     """
     Compile YAML specifications into a Power BI Project (.pbip) with TMDL files.
@@ -154,8 +155,8 @@ def compile_project(
         sources_yaml: Path to sources.yml file containing data source configurations
         outdir: Output directory for the generated Power BI project
         stub_report: Whether to create a stub report (default: True)
-        hide_extras_introspect: Whether to introspect for hide_extras policy (default: False)
-                               Note: MVP implementation treats this as keep_all
+        transforms_dirs: Optional list of directories to search for M-code transforms
+        dax_dirs: Optional list of directories to search for DAX templates
     
     Raises:
         FileNotFoundError: If input YAML files don't exist
@@ -229,10 +230,27 @@ def compile_project(
         # Resolve and load transforms into context
         from .discovery import resolve_transform_dirs
         from .transforms import load_transforms
+        from .dax import load_dax_templates
+        
         project_root = model_yaml.parent
-        dirs = resolve_transform_dirs(project_root, transforms_dirs or [])
-        logger.info(f"Loading transforms from {dirs}")
-        transforms = load_transforms(dirs, logger)
+        
+        # Load M-code transforms
+        transform_search_dirs = resolve_transform_dirs(project_root, transforms_dirs or [])
+        logger.info(f"Loading transforms from {transform_search_dirs}")
+        transforms = load_transforms(transform_search_dirs, logger)
+        
+        # Load DAX templates
+        # Use same search pattern as transforms: project-local dirs override global
+        dax_search_dirs = []
+        if dax_dirs:
+            dax_search_dirs.extend([Path(d) for d in dax_dirs])
+        # Also check for 'dax' subdirectory in project root
+        project_dax_dir = project_root / "dax"
+        if project_dax_dir.exists():
+            dax_search_dirs.append(project_dax_dir)
+        
+        logger.info(f"Loading DAX templates from {dax_search_dirs}")
+        dax_templates = load_dax_templates(dax_search_dirs, logger)
 
         # Emit expressions.tmdl with M source functions and transforms
         # DISABLED: Shared expressions cause composite model errors in Power BI
@@ -242,6 +260,20 @@ def compile_project(
         # Emit individual table TMDL files
         logger.info(f"Emitting {len(spec.model.tables)} table(s)...")
         for table in spec.model.tables:
+            # Resolve DAX templates before processing
+            if table.kind == "calculatedTable" and table.calculatedTableDef:
+                if table.calculatedTableDef.template:
+                    template_name = table.calculatedTableDef.template
+                    if template_name in dax_templates:
+                        # Replace template reference with actual DAX expression
+                        table.calculatedTableDef.expression = dax_templates[template_name]
+                        logger.debug(f"Resolved DAX template '{template_name}' for table '{table.name}'")
+                    else:
+                        raise ValueError(
+                            f"DAX template '{template_name}' not found for table '{table.name}'. "
+                            f"Available templates: {list(dax_templates.keys())}"
+                        )
+            
             # Set properties for regular tables
             if table.kind == "table":
                 set_regular_table_column_properties(table)
@@ -249,7 +281,7 @@ def compile_project(
             elif table.kind == "calculatedTable":
                 infer_calculated_table_column_properties(table)
             
-            emit_table_tmdl(tbl_dir, table, sources, transforms)
+            emit_table_tmdl(tbl_dir, table, sources, transforms, dax_templates)
             logger.debug(f"Created {tbl_dir / table.name}.tmdl")
         
         # Emit relationships.tmdl if relationships exist

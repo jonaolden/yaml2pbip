@@ -1,0 +1,3 @@
+VAR _table = FILTER(INFO.VIEW.MEASURES(),[Table] = "Measure Table" && LEN([DisplayFolder]) > 1 && LEN([Description]) > 1 )
+RETURN 
+SELECTCOLUMNS(_table,"Measure category",[DisplayFolder],"Measure name",[Name],"Measure description",[Description],"Measure definition",[Expression],"LineageTag",[LineageTag],"State", [state],"Format String", [FormatString], "Format String Definition", [FormatStringDefinition])

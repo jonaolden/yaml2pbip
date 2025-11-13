@@ -1,12 +1,10 @@
 """M code partition builder with modular construction using builder pattern."""
 import re
 import ast
-import textwrap
 import logging
 from typing import List, Tuple, Dict, Any
 
 from ..spec import Partition, Table, Source, SourcesSpec, Navigation
-from ..transforms import render_transform_template
 from .utils import format_column_list, format_types_list, ensure_trailing_comma, remove_trailing_comma
 from .source_resolver import generate_inline_source_mcode, parse_source_mcode, resolve_database_navigation
 
@@ -233,7 +231,10 @@ class MCodePartitionBuilder:
         return self
     
     def add_custom_transforms(self, transforms: Dict[str, str] | None = None) -> 'MCodePartitionBuilder':
-        """Add custom transform steps sequentially.
+        """Add custom transform function calls.
+        
+        Generates simple function calls to transform expression functions instead of inlining code.
+        Transforms are emitted as expression functions (e.g., FxProperCasting) in expressions.tmdl.
         
         Supports flexible custom_steps formats:
           - ["name1", "name2"]                     # simple names
@@ -241,10 +242,10 @@ class MCodePartitionBuilder:
           - [["name", params], ...]                # tuple/list shorthand
           - [{"name": value}, ...]                 # single-key dict shorthand (value is params)
         
-        Params are passed to the transform template as 'params' in the Jinja context.
+        Note: Parameterized transforms should use higher-order functions.
         
         Args:
-            transforms: Dictionary of transform name -> M code
+            transforms: Dictionary of transform name -> M code (used for validation only)
             
         Returns:
             Self for method chaining
@@ -349,56 +350,37 @@ class MCodePartitionBuilder:
                 [s["name"] for s in normalized_steps]
             )
         
-        # Apply transforms sequentially
+        # Apply transforms as function calls
         curr_var = self.seed_var
         for idx, step in enumerate(normalized_steps, start=1):
             step_name = step["name"]
             step_params = step.get("params")
-            transform_code = transforms_dict[step_name].strip()
             
-            # Render Jinja2 template with extended context (include params)
-            context = {
-                'input_var': curr_var,
-                'table_name': self.table.name,
-                'columns': self.declared_cols,
-                'column_names': format_column_list(self.declared_cols),
-                'params': step_params,
-            }
-            transform_code = render_transform_template(transform_code, context)
+            # Convert transform name to function name: "proper_casting" -> "FxProperCasting"
+            func_name = "Fx" + "".join(word.capitalize() for word in step_name.split("_"))
             
-            # Extract body after lambda signature
-            match = re.search(
-                r'\(\s*\w+\s+as\s+table\s*\)\s+as\s+table\s*(?:=>)?\s*(.*)',
-                transform_code,
-                re.DOTALL
-            )
-            body = match.group(1).strip() if match else transform_code
-            
-            # Sanitize var name (replace non-ident chars with '_')
+            # Generate variable name
             safe_step = re.sub(r"[^A-Za-z0-9_]", "_", step_name)
             var_name = f"__{safe_step}_{idx}"
             is_last = (idx == len(normalized_steps))
             
             # Ensure previous line has comma
-            if idx > 1 and not self.lines[-1].strip().endswith(','):
+            if self.lines and not self.lines[-1].strip().endswith(','):
                 self.lines[-1] = ensure_trailing_comma(self.lines[-1])
             
-            # Re-indent body to 4-space indent relative to assignment
-            dedented = textwrap.dedent(body)
-            indented_lines = []
-            for line in dedented.split('\n'):
-                stripped = line.strip()
-                if stripped:
-                    indented_lines.append(f'    {stripped}')
-                else:
-                    indented_lines.append('')
-            body_text = '\n'.join(indented_lines)
-            
-            # Emit transform (with comma if not last)
-            if is_last:
-                self.lines.append(f'  {var_name} =\n{body_text}')
+            # Generate function call
+            # For parameterized transforms: FxLimitRows(1000)(TBL)
+            # For simple transforms: FxProperCasting(TBL)
+            if step_params is not None:
+                # Higher-order function call
+                call = f'{func_name}({step_params})({curr_var})'
             else:
-                self.lines.append(f'  {var_name} =\n{body_text},')
+                # Simple function call
+                call = f'{func_name}({curr_var})'
+            
+            # Emit function call (with comma if not last)
+            comma = "" if is_last else ","
+            self.lines.append(f'  {var_name} = {call}{comma}')
             
             curr_var = var_name
         

@@ -22,16 +22,15 @@ expression {{ key }} = ```
 {% endfor %}
 
 {% if transforms %}
-{% for name, body in transforms.items() %}
-expression {{ name }} = ```
-{{ body.strip() }}
+{% for func_name, body in transforms.items() %}
+
+expression {{ func_name }} = ```
+	{{ body }}
 	```
 	lineageTag: {{ generate_lineage_tag() }}
+	
+	annotation PBI_ResultType = Function
 
-	annotation PBI_IncludeFutureArtifacts = False
-{% if not loop.last %}
-
-{% endif %}
 {% endfor %}
 {% endif %}
 

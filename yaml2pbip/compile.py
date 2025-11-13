@@ -15,7 +15,8 @@ from .emit import (
     emit_expressions_tmdl,
     emit_table_tmdl,
     emit_relationships_tmdl,
-    emit_report_by_path
+    emit_report_by_path,
+    emit_pbip_project
 )
 
 logger = logging.getLogger(__name__)
@@ -298,26 +299,9 @@ def compile_project(
             emit_report_by_path(rpt_dir, rel_model_path=f"../{spec.model.name}.SemanticModel")
             logger.debug(f"Created {rpt_dir / 'definition.pbir'}")
             
-            # Create .pbip project file
-            # Note: Only the report artifact is listed; Power BI discovers the semantic model automatically
-            pbip_content = {
-                "$schema": "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json",
-                "version": "1.0",
-                "artifacts": [
-                    {
-                        "report": {
-                            "path": f"{spec.model.name}.Report"
-                        }
-                    }
-                ],
-                "settings": {
-                    "enableAutoRecovery": True
-                }
-            }
-            
-            pbip_path = root / f"{spec.model.name}.pbip"
-            pbip_path.write_text(json.dumps(pbip_content, indent=2), encoding='utf-8')
-            logger.info(f"Compilation complete: {pbip_path}")
+            # Create .pbip project file using template
+            emit_pbip_project(root, spec.model.name)
+            logger.info(f"Compilation complete: {root / f'{spec.model.name}.pbip'}")
         else:
             logger.info(f"Compilation complete: {sm_dir}")
         

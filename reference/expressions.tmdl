@@ -1,0 +1,33 @@
+expression FxApplyDynamicTypes =
+		let
+		  FxApplyDynamicTypes =
+		    (tbl as table) as table =>
+		      let
+		        SchemaTbl = Table.Schema(tbl),
+		        TypeFromName = (t as nullable text) as type =>
+		          try Expression.Evaluate(t, #shared) otherwise type any,
+		        TypePairs =
+		          List.Transform(
+		            Table.ToRecords(SchemaTbl),
+		            each
+		              let
+		                scale = try [NumericScale] otherwise 0,
+		                kind  = Text.Lower([Kind]),
+		                baseType =
+		                  if kind = "number" then
+		                    if scale = 0 then Int64.Type else Decimal.Type
+		                  else
+		                    TypeFromName(try [TypeName] otherwise null)
+		              in
+		                {[Name], baseType}
+		          )
+		      in
+		        Table.TransformColumnTypes(tbl, TypePairs, "en-US")
+		in
+		  FxApplyDynamicTypes
+	lineageTag: f3765e78-220a-40ac-8dca-276b1918251b
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Function
+

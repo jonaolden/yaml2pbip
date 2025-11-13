@@ -2,7 +2,6 @@
 from pathlib import Path
 from typing import Dict, List
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-import json
 import uuid
 import logging
 
@@ -58,12 +57,10 @@ def emit_pbism(sm_dir: Path) -> None:
         sm_dir: Path to SemanticModel directory
     """
     sm_dir.mkdir(parents=True, exist_ok=True)
-    pbism_content = {
-        "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/definitionProperties/1.0.0/schema.json",
-        "version": "4.2",
-        "settings": {}
-    }
-    (sm_dir / "definition.pbism").write_text(json.dumps(pbism_content, indent=2))
+    env = _get_jinja_env()
+    template = env.get_template("definition.pbism.j2")
+    content = template.render()
+    (sm_dir / "definition.pbism").write_text(content)
 
 
 def emit_model_tmdl(def_dir: Path, model: ModelBody) -> None:
@@ -109,15 +106,27 @@ def emit_culture_tmdl(def_dir: Path, culture: str) -> None:
 
 
 def emit_expressions_tmdl(def_dir: Path, sources: SourcesSpec, transforms: dict | None = None) -> None:
-    """Render and write expressions.tmdl with M source functions.
+    """Render and write expressions.tmdl with M source functions AND transform functions.
 
-    Transforms are NOT emitted here - they are inlined directly into partition M code.
+    Transforms are now emitted as expression functions (e.g., FxProperCasting) that can be
+    called from partition M code, following native Power Query patterns.
     """
     def_dir.mkdir(parents=True, exist_ok=True)
     env = _get_jinja_env()
     template = env.get_template("expressions.tmdl.j2")
-    # Do NOT emit transforms - they're inlined into partitions
-    content = template.render(sources=sources.sources, transforms={})
+    
+    # Generate function name mapping: transform_name -> FxTransformName
+    transform_functions = {}
+    if transforms:
+        for name, body in transforms.items():
+            # Convert "proper_casting" -> "FxProperCasting"
+            func_name = "Fx" + "".join(word.capitalize() for word in name.split("_"))
+            transform_functions[func_name] = body.strip()
+    
+    content = template.render(
+        sources=sources.sources,
+        transforms=transform_functions
+    )
     (def_dir / "expressions.tmdl").write_text(content)
 
 
@@ -244,15 +253,21 @@ def emit_report_by_path(rpt_dir: Path, rel_model_path: str) -> None:
         rel_model_path: Relative path to semantic model (e.g., "../ModelName.SemanticModel")
     """
     rpt_dir.mkdir(parents=True, exist_ok=True)
+    env = _get_jinja_env()
+    template = env.get_template("definition.pbir.j2")
+    content = template.render(rel_model_path=rel_model_path)
+    (rpt_dir / "definition.pbir").write_text(content)
+
+
+def emit_pbip_project(root: Path, model_name: str) -> None:
+    """Create .pbip project file.
     
-    pbir_content = {
-        "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
-        "version": "4.0",
-        "datasetReference": {
-            "byPath": {
-                "path": rel_model_path
-            }
-        }
-    }
-    
-    (rpt_dir / "definition.pbir").write_text(json.dumps(pbir_content, indent=2))
+    Args:
+        root: Path to project root directory
+        model_name: Name of the model
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    env = _get_jinja_env()
+    template = env.get_template("project.pbip.j2")
+    content = template.render(model_name=model_name)
+    (root / f"{model_name}.pbip").write_text(content)

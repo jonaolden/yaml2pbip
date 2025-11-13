@@ -43,10 +43,10 @@ def test_emission():
         }
     )
     
-    # Create sample transforms
+    # Create sample transforms (pure M-code, no Jinja2)
     transforms = {
-        "proper_naming": "(t as table) as table => Table.RenameColumns(t, {{\"OLD_NAME\", \"NewName\"}})",
-        "cast_numbers": "(t as table) as table => Table.TransformColumnTypes(t, {{\"Amount\", Int64.Type}})"
+        "proper_naming": "(t as table) as table => Table.RenameColumns(t, {\"OLD_NAME\", \"NewName\"})",
+        "cast_numbers": "(t as table) as table => Table.TransformColumnTypes(t, {\"Amount\", Int64.Type})"
     }
     
     # Create model
@@ -139,8 +139,8 @@ def test_emission():
         for table in model.tables:
             emit_table_tmdl(tbl_dir, table, sources, transforms=transforms)
 
-        # Additional unit test: ensure partition transform injection works with sequential steps
-        print("\nTesting partition transform sequential step injection...")
+        # Additional unit test: ensure partition transform function calls work
+        print("\nTesting partition transform function calls...")
         from yaml2pbip.emit import generate_partition_mcode
         # Create a navigation partition that references transforms
         t_partition = Partition(
@@ -158,12 +158,18 @@ def test_emission():
             source={"use": "sf_main"}
         )
         mcode = generate_partition_mcode(t_partition, t_table, sources, transforms=transforms)
-        # Check that transforms are embedded as complete let...in blocks
-        assert "__proper_naming_1 =" in mcode, "First transform should be assigned to __proper_naming_1"
-        assert "__cast_numbers_2 =" in mcode, "Second transform should be assigned to __cast_numbers_2"
-        assert "Table.RenameColumns(t," in mcode, "Transform body should reference parameter 't' (not replaced in original transform)"
+        # Check that transforms are called as expression functions
+        assert "__proper_naming_1 = FxProperNaming(" in mcode, "First transform should call FxProperNaming function"
+        assert "__cast_numbers_2 = FxCastNumbers(" in mcode, "Second transform should call FxCastNumbers function"
         assert "in\n  __cast_numbers_2" in mcode, "Final step __cast_numbers_2 should be returned in 'in' clause"
-        print("✓ Sequential transform steps with embedded let...in blocks appear in generated M code")
+        print("✓ Transform function calls appear in generated M code")
+        
+        # Check expressions.tmdl contains transform functions
+        expr_content = (def_dir / "expressions.tmdl").read_text()
+        assert "expression FxProperNaming" in expr_content, "FxProperNaming function should be in expressions.tmdl"
+        assert "expression FxCastNumbers" in expr_content, "FxCastNumbers function should be in expressions.tmdl"
+        assert "annotation PBI_ResultType = Function" in expr_content, "Transform functions should have PBI_ResultType annotation"
+        print("✓ Transform functions emitted to expressions.tmdl")
         
         emit_relationships_tmdl(def_dir, model)
         emit_report_by_path(rpt_dir, f"../{model.name}.SemanticModel")
